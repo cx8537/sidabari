@@ -4,11 +4,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/useAppStore";
 import { usePanelFocus } from "@/hooks/usePanelFocus";
-import { Terminal } from "@/components/terminal/Terminal";
 import { SshTerminal, type SshConnect } from "@/components/terminal/SshTerminal";
 import { ptyWrite } from "@/lib/pty";
 import { loadConfig } from "@/lib/config";
-import { EC2_DIAGNOSTIC_LINES } from "@/components/terminal/mockContent";
 
 type Props = {
   role: "main" | "diagnostic";
@@ -30,14 +28,15 @@ type ConnectState =
 export function EC2Panel({ role }: Props) {
   const addEvent = useAppStore((s) => s.addEvent);
   const mainClaudeSessionId = useAppStore((s) => s.mainClaudeSessionId);
+  const mainEc2SessionId = useAppStore((s) => s.mainEc2SessionId);
+  const setMainEc2SessionId = useAppStore((s) => s.setMainEc2SessionId);
   const label = role === "main" ? "EC2 메인" : "EC2 진단";
   const panelId = role === "main" ? "ec2-main" : "ec2-diagnostic";
   const { isFocused, onMouseDown } = usePanelFocus(panelId);
 
-  // 메인 패널만 SSH 연결 정보 로드 (사양서 §3.2 — 진단은 stage 5a-2에서).
+  // 두 패널 모두 같은 SSH 설정 사용. (진단도 같은 host에 별도 채널.)
   const [conn, setConn] = useState<ConnectState>({ status: "loading" });
   useEffect(() => {
-    if (role !== "main") return;
     let cancelled = false;
     loadConfig()
       .then((c) => {
@@ -66,7 +65,7 @@ export function EC2Panel({ role }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [role]);
+  }, []);
 
   async function handleAnalyze() {
     if (!mainClaudeSessionId) {
@@ -88,6 +87,35 @@ export function EC2Panel({ role }: Props) {
   }
 
   const disabled = !mainClaudeSessionId;
+
+  // 진단 패널은 메인 connect가 활성된 후에 mount — 호스트 키 prompt 중복 방지.
+  // 메인 SshTerminal의 onSessionChange가 mainEc2SessionId를 갱신.
+  // 사양서 §3.2 [D3] — 진단 명령용 별도 SSH 채널.
+  const showSshTerminal =
+    conn.status === "ready" &&
+    (role === "main" || (role === "diagnostic" && mainEc2SessionId !== null));
+
+  let body: React.ReactNode;
+  if (conn.status === "loading") {
+    body = (
+      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+        설정 불러오는 중...
+      </div>
+    );
+  } else if (role === "diagnostic" && mainEc2SessionId === null) {
+    body = (
+      <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        메인 SSH 연결 활성 후 진단 채널이 시작됩니다.
+      </div>
+    );
+  } else if (showSshTerminal) {
+    body = (
+      <SshTerminal
+        connect={conn.connect}
+        onSessionChange={role === "main" ? setMainEc2SessionId : undefined}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full flex-col gap-[3px] bg-background" onMouseDown={onMouseDown}>
@@ -112,19 +140,7 @@ export function EC2Panel({ role }: Props) {
           <Send /> 분석 요청
         </Button>
       </div>
-      <div className="min-h-0 flex-1 mx-0.5">
-        {role === "main" ? (
-          conn.status === "loading" ? (
-            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              설정 불러오는 중...
-            </div>
-          ) : (
-            <SshTerminal connect={conn.connect} />
-          )
-        ) : (
-          <Terminal initialLines={EC2_DIAGNOSTIC_LINES} />
-        )}
-      </div>
+      <div className="min-h-0 flex-1 mx-0.5">{body}</div>
     </div>
   );
 }

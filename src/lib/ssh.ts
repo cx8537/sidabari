@@ -84,3 +84,61 @@ export async function listenSshHostKeyPrompt(
     handler(e.payload);
   });
 }
+
+// SFTP — 사양서 §3.2 [2] jar 업로드.
+export type SftpUploadOptions = {
+  host: string;
+  port?: number;
+  user: string;
+  private_key_path: string;
+  local_path: string;
+  remote_path: string;
+};
+
+export async function sftpUpload(opts: SftpUploadOptions): Promise<number> {
+  return await invoke<number>("sftp_upload", { opts });
+}
+
+// SSH exec — 사양서 §3.2 [3]/[4] (deploy.sh, monitor 등 단일 명령 + exit code).
+export type SshExecOptions = {
+  host: string;
+  port?: number;
+  user: string;
+  private_key_path: string;
+  command: string;
+};
+
+export type ExecLinePayload = {
+  exec_id: string;
+  stream: "stdout" | "stderr";
+  line: string;
+};
+
+export type ExecDonePayload = {
+  exec_id: string;
+  exit_code: number | null;
+  succeeded: boolean;
+  reason: string;
+};
+
+export async function sshExec(opts: SshExecOptions): Promise<string> {
+  return await invoke<string>("ssh_exec", { opts });
+}
+
+export async function listenSshExecLine(
+  execId: string,
+  handler: (payload: ExecLinePayload) => void,
+): Promise<UnlistenFn> {
+  return await listen<ExecLinePayload>(`ssh-exec:line:${execId}`, (e) => {
+    handler(e.payload);
+  });
+}
+
+export async function listenSshExecDone(
+  execId: string,
+  handler: (payload: ExecDonePayload) => void,
+): Promise<UnlistenFn> {
+  return await listen<ExecDonePayload>(`ssh-exec:done:${execId}`, (e) => {
+    handler(e.payload);
+  });
+}

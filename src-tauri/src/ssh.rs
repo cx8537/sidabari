@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use russh::client::{self, Handler};
 use russh::{ChannelMsg, Disconnect};
@@ -9,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use uuid::Uuid;
+
+use crate::known_hosts;
 
 // 사양서 §3.2 / §4.2 / §1.2.3 — EC2 SSH 셸 토대.
 // 보안 (CLAUDE.md §1.2.3):
@@ -73,7 +74,7 @@ struct HostKeyPromptPayload {
     fingerprint: String,
 }
 
-struct ClientHandler {
+pub(crate) struct ClientHandler {
     state: Arc<SshState>,
     app: AppHandle,
     host: String,
@@ -89,9 +90,9 @@ impl Handler for ClientHandler {
         public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
         let fp = compute_fingerprint(public_key);
-        let host_key = format!("{}:{}", self.host, self.port);
+        let host_key = known_hosts::host_key(&self.host, self.port);
 
-        // 메모리 캐시 확인 — 같은 앱 세션 동안 같은 host의 같은 키는 자동 수락.
+        // 1) 메모리 캐시 hit — 같은 앱 세션 내 재접속 (또는 다른 채널이 방금 승인).
         {
             let cache = self.state.accepted_fingerprints.lock().await;
             if let Some(saved) = cache.get(&host_key) {
@@ -99,14 +100,34 @@ impl Handler for ClientHandler {
                     return Ok(true);
                 }
                 eprintln!(
-                    "[ssh] host key changed for {} — saved={} got={}",
+                    "[ssh] host key changed for {} — cached={} got={}",
                     host_key, saved, fp
                 );
                 return Ok(false);
             }
         }
 
-        // 처음 보는 호스트 — frontend에 fingerprint 표시 후 사용자 승인 대기.
+        // 2) 파일의 known_hosts hit — 이전 세션에서 영구 저장된 키.
+        match known_hosts::load(&self.app) {
+            Ok(kh) => {
+                if let Some(saved) = kh.entries.get(&host_key) {
+                    if saved == &fp {
+                        // 메모리 캐시에도 채워서 같은 host 다음 connect는 file IO 없이 OK.
+                        let mut cache = self.state.accepted_fingerprints.lock().await;
+                        cache.insert(host_key, fp);
+                        return Ok(true);
+                    }
+                    eprintln!(
+                        "[ssh] host key changed for {} — saved={} got={}",
+                        host_key, saved, fp
+                    );
+                    return Ok(false);
+                }
+            }
+            Err(e) => eprintln!("[ssh] known_hosts 로드 실패 (계속 진행, modal로): {}", e),
+        }
+
+        // 3) 처음 보는 host — frontend로 fingerprint 표시 후 사용자 승인 대기.
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         {
@@ -124,13 +145,20 @@ impl Handler for ClientHandler {
             },
         );
 
-        // 사용자가 ssh_accept_host_key invoke 시 oneshot으로 결과 수신.
         let accepted = rx.await.unwrap_or(false);
         if accepted {
-            let mut cache = self.state.accepted_fingerprints.lock().await;
-            cache.insert(host_key, fp);
+            // 메모리 캐시 + 파일 영구 저장.
+            {
+                let mut cache = self.state.accepted_fingerprints.lock().await;
+                cache.insert(host_key.clone(), fp.clone());
+            }
+            let mut kh = known_hosts::load(&self.app).unwrap_or_default();
+            kh.schema_version = 1;
+            kh.entries.insert(host_key, fp);
+            if let Err(e) = known_hosts::save(&self.app, &kh) {
+                eprintln!("[ssh] known_hosts 저장 실패 (메모리만 갱신): {}", e);
+            }
         } else {
-            // 정리
             self.state.pending_keys.lock().await.remove(&request_id);
         }
         Ok(accepted)
@@ -142,6 +170,47 @@ fn compute_fingerprint(public_key: &PublicKey) -> String {
     format!("SHA256:{}", public_key.fingerprint())
 }
 
+// SFTP 등 다른 모듈에서도 같은 호스트 키 검증/인증 흐름을 재사용하기 위한 helper.
+// 호출자가 handle을 받아 channel_open_session/request_subsystem 등으로 활용.
+pub(crate) async fn establish_handle(
+    app: &AppHandle,
+    state: &Arc<SshState>,
+    host: &str,
+    port: u16,
+    user: &str,
+    private_key_path: &str,
+) -> Result<client::Handle<ClientHandler>, String> {
+    let key = russh_keys::load_secret_key(private_key_path, None)
+        .map_err(|e| format!("PEM 키 로드 실패 ({}): {}", private_key_path, e))?;
+    let key_pair = Arc::new(key);
+
+    let config = Arc::new(client::Config {
+        inactivity_timeout: None,
+        ..Default::default()
+    });
+
+    let handler = ClientHandler {
+        state: state.clone(),
+        app: app.clone(),
+        host: host.to_string(),
+        port,
+    };
+
+    let addr = format!("{}:{}", host, port);
+    let mut handle = client::connect(config, addr, handler)
+        .await
+        .map_err(|e| format!("SSH 연결 실패: {}", e))?;
+
+    let auth_ok = handle
+        .authenticate_publickey(user, key_pair)
+        .await
+        .map_err(|e| format!("인증 실패: {}", e))?;
+    if !auth_ok {
+        return Err("인증 실패 (키 또는 사용자 불일치)".to_string());
+    }
+    Ok(handle)
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -151,37 +220,15 @@ pub async fn ssh_connect(
     let session_id = opts.session_id.clone();
     let state_arc = state.inner().clone();
 
-    // PEM 키 로드 — 메모리에만, 파일 내용 저장 X.
-    let key = russh_keys::load_secret_key(&opts.private_key_path, None)
-        .map_err(|e| format!("PEM 키 로드 실패 ({}): {}", opts.private_key_path, e))?;
-    let key_pair = Arc::new(key);
-
-    // 셸 세션은 idle 가능 — inactivity_timeout None.
-    // (Some(Duration::ZERO)는 "0초 후 timeout"으로 해석돼 즉시 끊기므로 사용 금지.)
-    let config = Arc::new(client::Config {
-        inactivity_timeout: None,
-        ..Default::default()
-    });
-
-    let handler = ClientHandler {
-        state: state_arc.clone(),
-        app: app.clone(),
-        host: opts.host.clone(),
-        port: opts.port,
-    };
-
-    let addr = format!("{}:{}", opts.host, opts.port);
-    let mut handle = client::connect(config, addr, handler)
-        .await
-        .map_err(|e| format!("SSH 연결 실패: {}", e))?;
-
-    let auth_ok = handle
-        .authenticate_publickey(&opts.user, key_pair)
-        .await
-        .map_err(|e| format!("인증 실패: {}", e))?;
-    if !auth_ok {
-        return Err("인증 실패 (키 또는 사용자 불일치)".to_string());
-    }
+    let mut handle = establish_handle(
+        &app,
+        &state_arc,
+        &opts.host,
+        opts.port,
+        &opts.user,
+        &opts.private_key_path,
+    )
+    .await?;
 
     let channel = handle
         .channel_open_session()

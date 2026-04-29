@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-export type AttemptStatus = "idle" | "running" | "aborted";
+export type AttemptStatus =
+  | "idle"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "aborted";
 
 export type PanelId =
   | "main-claude"
@@ -18,16 +23,21 @@ export type ConsoleEvent = {
 
 type AppState = {
   attemptStatus: AttemptStatus;
+  attemptId: string | null;
   consoleEvents: ConsoleEvent[];
   focusedPanelId: PanelId | null;
   // 좌측 메인 Claude PTY의 현재 활성 sessionId (사양서 §3.6 — 분석 요청 텍스트 주입 대상).
-  // 폴백 셸 전환/재시작 시 변경됨. 세션 없을 때 null.
   mainClaudeSessionId: string | null;
+  // EC2 메인 SSH 활성 sessionId. 진단 패널이 mount되기 전 조건.
+  mainEc2SessionId: string | null;
   addEvent: (source: string, message: string) => void;
-  startAttempt: () => void;
+  beginAttempt: (attemptId: string) => void;
+  finishAttempt: (succeeded: boolean) => void;
   abortAttempt: () => void;
+  resetAttempt: () => void;
   setFocusedPanel: (id: PanelId | null) => void;
   setMainClaudeSessionId: (id: string | null) => void;
+  setMainEc2SessionId: (id: string | null) => void;
 };
 
 function newEvent(source: string, message: string): ConsoleEvent {
@@ -41,24 +51,32 @@ function newEvent(source: string, message: string): ConsoleEvent {
 
 export const useAppStore = create<AppState>((set) => ({
   attemptStatus: "idle",
-  consoleEvents: [newEvent("SYSTEM", "또돌이 시작 (1단계 UI Mock)")],
+  attemptId: null,
+  consoleEvents: [newEvent("SYSTEM", "또돌이 시작")],
   focusedPanelId: null,
   mainClaudeSessionId: null,
+  mainEc2SessionId: null,
 
   addEvent: (source, message) =>
     set((state) => ({
       consoleEvents: [...state.consoleEvents, newEvent(source, message)],
     })),
 
-  startAttempt: () =>
+  beginAttempt: (attemptId) =>
+    set((state) => ({
+      attemptStatus: "running",
+      attemptId,
+      consoleEvents: [
+        ...state.consoleEvents,
+        newEvent("USER", `시도 시작 (id=${attemptId.slice(0, 8)})`),
+      ],
+    })),
+
+  finishAttempt: (succeeded) =>
     set((state) => {
-      if (state.attemptStatus === "running") return state;
+      if (state.attemptStatus !== "running") return state;
       return {
-        attemptStatus: "running",
-        consoleEvents: [
-          ...state.consoleEvents,
-          newEvent("USER", "시도 시작 클릭"),
-        ],
+        attemptStatus: succeeded ? "succeeded" : "failed",
       };
     }),
 
@@ -74,7 +92,15 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
+  resetAttempt: () =>
+    set({
+      attemptStatus: "idle",
+      attemptId: null,
+    }),
+
   setFocusedPanel: (id) => set({ focusedPanelId: id }),
 
   setMainClaudeSessionId: (id) => set({ mainClaudeSessionId: id }),
+
+  setMainEc2SessionId: (id) => set({ mainEc2SessionId: id }),
 }));

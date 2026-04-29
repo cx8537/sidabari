@@ -114,6 +114,22 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     });
   }
 
+  function updateDeploy(patch: Partial<Config["deploy"]>) {
+    if (state.status !== "ready") return;
+    setState({
+      status: "ready",
+      config: { ...state.config, deploy: { ...state.config.deploy, ...patch } },
+    });
+  }
+
+  function updateSftp(patch: Partial<Config["sftp"]>) {
+    if (state.status !== "ready") return;
+    setState({
+      status: "ready",
+      config: { ...state.config, sftp: { ...state.config.sftp, ...patch } },
+    });
+  }
+
   async function handleSave() {
     if (state.status !== "ready") return;
     setSaving(true);
@@ -168,9 +184,47 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     }
   }
 
+  async function handlePickBuildDir() {
+    setPickError(null);
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        directory: true,
+        title: "빌드 작업 디렉토리 선택",
+      });
+      if (typeof selected === "string") {
+        updateDeploy({ build_working_directory: selected });
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setPickError(message);
+    }
+  }
+
+  async function handlePickJar() {
+    setPickError(null);
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "빌드된 jar 파일 선택",
+        filters: [
+          { name: "JAR", extensions: ["jar"] },
+          { name: "모든 파일", extensions: ["*"] },
+        ],
+      });
+      if (typeof selected === "string") {
+        updateDeploy({ jar_output_path: selected });
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setPickError(message);
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="text-accent-gold">설정</DialogTitle>
           <DialogDescription>
@@ -311,6 +365,149 @@ export function SettingsModal({ open, onOpenChange }: Props) {
             {pickError && (
               <p className="text-xs text-destructive">파일 선택 실패: {pickError}</p>
             )}
+          </div>
+
+          <div className="my-1 h-px bg-foreground/20" />
+          <div className="text-xs font-semibold text-card-foreground">
+            빌드 / 배포 (사양서 §3.2)
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="build-cmd">
+              빌드 명령
+            </label>
+            <input
+              id="build-cmd"
+              value={config.deploy.build_command}
+              onChange={(e) => updateDeploy({ build_command: e.target.value })}
+              disabled={!isReady}
+              placeholder="예: gradlew.bat build, ./gradlew build, build.bat"
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT_CLASS}
+            />
+            <p className="text-xs text-muted-foreground">
+              셸로 실행됨 (Windows: cmd /c, Unix: sh -c). 인용/리다이렉션 사용 가능.
+            </p>
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="build-dir">
+              빌드 작업 디렉토리
+            </label>
+            <div className="flex items-center gap-1.5">
+              <input
+                id="build-dir"
+                value={config.deploy.build_working_directory}
+                readOnly
+                disabled={!isReady}
+                placeholder="경로 버튼으로 폴더 선택"
+                autoComplete="off"
+                spellCheck={false}
+                className={INPUT_CLASS}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="default"
+                onClick={handlePickBuildDir}
+                disabled={!isReady}
+                title="폴더 선택"
+              >
+                <FolderOpen /> 경로
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="jar-output">
+              빌드된 jar 절대경로
+            </label>
+            <div className="flex items-center gap-1.5">
+              <input
+                id="jar-output"
+                value={config.deploy.jar_output_path}
+                onChange={(e) => updateDeploy({ jar_output_path: e.target.value })}
+                disabled={!isReady}
+                placeholder="예: D:\projects\myapp\build\libs\myapp.jar"
+                autoComplete="off"
+                spellCheck={false}
+                className={INPUT_CLASS}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="default"
+                onClick={handlePickJar}
+                disabled={!isReady}
+                title="파일 선택"
+              >
+                <FolderOpen /> 경로
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              빌드 후 생성되는 jar 파일의 절대경로 (파일명이 매번 동일하다는 가정).
+            </p>
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="build-timeout">
+              빌드 타임아웃 (초)
+            </label>
+            <input
+              id="build-timeout"
+              type="number"
+              min={1}
+              value={config.deploy.build_timeout_seconds}
+              onChange={(e) =>
+                updateDeploy({
+                  build_timeout_seconds: Math.max(
+                    1,
+                    Number.parseInt(e.target.value, 10) || 0,
+                  ),
+                })
+              }
+              disabled={!isReady}
+              className={INPUT_CLASS}
+            />
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="sftp-remote">
+              SFTP 업로드 디렉토리 (원격)
+            </label>
+            <input
+              id="sftp-remote"
+              value={config.sftp.remote_upload_path}
+              onChange={(e) => updateSftp({ remote_upload_path: e.target.value })}
+              disabled={!isReady}
+              placeholder="예: /home/ec2-user/uploads"
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT_CLASS}
+            />
+            <p className="text-xs text-muted-foreground">
+              jar 파일은 이 디렉토리 안에 동일 파일명으로 업로드됩니다.
+            </p>
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="deploy-script">
+              배포 명령 (EC2에서 실행)
+            </label>
+            <input
+              id="deploy-script"
+              value={config.deploy.deploy_script}
+              onChange={(e) => updateDeploy({ deploy_script: e.target.value })}
+              disabled={!isReady}
+              placeholder="예: cd /home/ec2-user && bash deploy.sh"
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT_CLASS}
+            />
+            <p className="text-xs text-muted-foreground">
+              SSH exec 채널로 실행. cd 등 cwd 이동은 명령에 직접 포함하세요.
+            </p>
           </div>
         </div>
 
