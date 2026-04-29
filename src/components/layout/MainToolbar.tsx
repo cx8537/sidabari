@@ -15,7 +15,10 @@ import {
   listenSshExecDone,
   listenSshExecLine,
   sftpUpload,
+  sftpUploadKill,
   sshExec,
+  sshExecKill,
+  sshWrite,
 } from "@/lib/ssh";
 
 // 경로 helper — basename은 Windows `\`와 Unix `/` 둘 다 처리.
@@ -46,6 +49,12 @@ function statusColor(status: AttemptStatus): string {
 export function MainToolbar() {
   const status = useAppStore((s) => s.attemptStatus);
   const attemptId = useAppStore((s) => s.attemptId);
+  const mainEc2SessionId = useAppStore((s) => s.mainEc2SessionId);
+  const mainEc2DiagSessionId = useAppStore((s) => s.mainEc2DiagSessionId);
+  const activeDeployExecId = useAppStore((s) => s.activeDeployExecId);
+  const activeUploadId = useAppStore((s) => s.activeUploadId);
+  const setActiveDeployExecId = useAppStore((s) => s.setActiveDeployExecId);
+  const setActiveUploadId = useAppStore((s) => s.setActiveUploadId);
   const beginAttempt = useAppStore((s) => s.beginAttempt);
   const finishAttempt = useAppStore((s) => s.finishAttempt);
   const abortAttempt = useAppStore((s) => s.abortAttempt);
@@ -54,6 +63,11 @@ export function MainToolbar() {
   const [starting, setStarting] = useState(false);
 
   const isRunning = status === "running";
+
+  // 단계 사이 abort 가드 — sftp/exec await 도중에 abort돼도 다음 단계로 가지 않게.
+  function isStillRunning(): boolean {
+    return useAppStore.getState().attemptStatus === "running";
+  }
 
   async function runUpload(cfg: Config) {
     const d = cfg.deploy;
@@ -82,8 +96,13 @@ export function MainToolbar() {
 
     addEvent("UPLOAD", `$ sftp put ${localPath}`);
     addEvent("UPLOAD", `   → ${e2.user}@${e2.host}:${remotePath}`);
+
+    // upload_id를 frontend에서 생성 → store에 등록 → backend kill 가능.
+    const uploadId = crypto.randomUUID();
+    setActiveUploadId(uploadId);
     try {
       const bytes = await sftpUpload({
+        upload_id: uploadId,
         host: e2.host,
         port: e2.port,
         user: e2.user,
@@ -91,12 +110,20 @@ export function MainToolbar() {
         local_path: localPath,
         remote_path: remotePath,
       });
+      setActiveUploadId(null);
       addEvent("UPLOAD", `[업로드 완료] ${bytes.toLocaleString()} bytes`);
+      // 사양서 §3.7 — 업로드 await 완료 후라도 abort 상태면 다음 단계 진행 X.
+      if (!isStillRunning()) {
+        addEvent("MONITOR", "[중단] attempt 비활성 — 배포 단계 생략");
+        return;
+      }
       // 사양서 §3.2 [3] — 자동으로 deploy.sh 실행 (실패 시 즉시 멈춤).
       await runDeploy(cfg);
     } catch (e) {
+      setActiveUploadId(null);
       const msg = e instanceof Error ? e.message : String(e);
       addEvent("MONITOR", `[업로드 실패] ${msg}`);
+      // abort로 인한 실패면 status가 이미 aborted — finishAttempt 가드로 무시됨.
       finishAttempt(false);
     }
   }
@@ -107,6 +134,10 @@ export function MainToolbar() {
     if (!script.trim()) {
       addEvent("MONITOR", "[배포 실패] 배포 명령 미설정");
       finishAttempt(false);
+      return;
+    }
+    if (!isStillRunning()) {
+      addEvent("MONITOR", "[중단] attempt 비활성 — 배포 시작 생략");
       return;
     }
 
@@ -129,6 +160,7 @@ export function MainToolbar() {
         command: script,
       })
         .then(async (execId) => {
+          setActiveDeployExecId(execId);
           unlistenLine = await listenSshExecLine(execId, (p) => {
             const prefix = p.stream === "stderr" ? "[stderr] " : "";
             addEvent("DEPLOY", prefix + p.line);
@@ -137,10 +169,13 @@ export function MainToolbar() {
             if (settled) return;
             settled = true;
             cleanup();
+            setActiveDeployExecId(null);
             addEvent(
               p.succeeded ? "DEPLOY" : "MONITOR",
               `[배포 ${p.succeeded ? "성공" : "실패"}] ${p.reason}`,
             );
+            // monitor는 EC2 메인 SSH 연결 시점부터 이미 흐르고 있음 (EC2Panel useEffect).
+            // deploy.sh가 service stop+start 해도 journalctl -f가 새 startup 로그 그대로 받음.
             finishAttempt(p.succeeded);
             resolve();
           });
@@ -149,6 +184,7 @@ export function MainToolbar() {
           if (settled) return;
           settled = true;
           cleanup();
+          setActiveDeployExecId(null);
           const msg = e instanceof Error ? e.message : String(e);
           addEvent("MONITOR", `[배포 실패] ${msg}`);
           finishAttempt(false);
@@ -193,6 +229,11 @@ export function MainToolbar() {
           return;
         }
         addEvent("BUILD", `[빌드 성공] ${p.reason}`);
+        // 사양서 §3.7 — 빌드 후 abort 상태이면 다음 단계 진행 X.
+        if (!isStillRunning()) {
+          addEvent("MONITOR", "[중단] attempt 비활성 — 업로드 단계 생략");
+          return;
+        }
         // 사양서 §3.2 [2] — 자동으로 jar 업로드 진행 (실패 시 즉시 멈춤).
         await runUpload(cfg);
       });
@@ -208,6 +249,8 @@ export function MainToolbar() {
   async function handleAbort() {
     if (!isRunning) return;
     abortAttempt();
+    // 사양서 §3.7 — 진행 중 명령에 Ctrl+C 전송, SSH 채널은 유지.
+    // 1) 빌드 (로컬 process)
     if (attemptId) {
       try {
         await buildKill(attemptId);
@@ -215,6 +258,32 @@ export function MainToolbar() {
         const msg = e instanceof Error ? e.message : String(e);
         addEvent("SYSTEM", `빌드 중단 IPC 실패: ${msg}`);
       }
+    }
+    // 2) 진행 중 SFTP 업로드 — 청크 사이 cancel
+    if (activeUploadId) {
+      try {
+        await sftpUploadKill(activeUploadId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        addEvent("SYSTEM", `업로드 중단 IPC 실패: ${msg}`);
+      }
+    }
+    // 3) 진행 중 ssh_exec (deploy 등) — SIGINT 전송 후 channel close
+    if (activeDeployExecId) {
+      try {
+        await sshExecKill(activeDeployExecId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        addEvent("SYSTEM", `배포 exec 중단 IPC 실패: ${msg}`);
+      }
+    }
+    // 4) 메인 SSH 셸 — \x03 전송 (monitor 등 셸 명령 중단). SSH 채널 자체는 살림.
+    if (mainEc2SessionId) {
+      sshWrite(mainEc2SessionId, "\x03").catch(() => {});
+    }
+    // 5) 진단 SSH 셸 — \x03 전송 (사용자 ad-hoc 명령 진행 중일 수 있음).
+    if (mainEc2DiagSessionId) {
+      sshWrite(mainEc2DiagSessionId, "\x03").catch(() => {});
     }
   }
 

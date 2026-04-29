@@ -30,6 +30,15 @@ type AppState = {
   mainClaudeSessionId: string | null;
   // EC2 메인 SSH 활성 sessionId. 진단 패널이 mount되기 전 조건.
   mainEc2SessionId: string | null;
+  // EC2 진단 SSH sessionId — 강제 중단 시 \x03 전송 대상.
+  mainEc2DiagSessionId: string | null;
+  // 현재 진행 중인 deploy ssh_exec id — 강제 중단 시 ssh_exec_kill 대상.
+  activeDeployExecId: string | null;
+  // 현재 진행 중인 SFTP upload id — 강제 중단 시 sftp_upload_kill 대상.
+  activeUploadId: string | null;
+  // EC2 진단 패널은 floating dialog로 표시 — 사용자가 [진단] 버튼으로 on-demand로 열고
+  // 닫을 때 SSH 세션 자동 종료 (DialogContent unmount → SshTerminal cleanup).
+  diagPanelOpen: boolean;
   addEvent: (source: string, message: string) => void;
   beginAttempt: (attemptId: string) => void;
   finishAttempt: (succeeded: boolean) => void;
@@ -38,6 +47,10 @@ type AppState = {
   setFocusedPanel: (id: PanelId | null) => void;
   setMainClaudeSessionId: (id: string | null) => void;
   setMainEc2SessionId: (id: string | null) => void;
+  setMainEc2DiagSessionId: (id: string | null) => void;
+  setActiveDeployExecId: (id: string | null) => void;
+  setActiveUploadId: (id: string | null) => void;
+  setDiagPanelOpen: (open: boolean) => void;
 };
 
 function newEvent(source: string, message: string): ConsoleEvent {
@@ -56,6 +69,10 @@ export const useAppStore = create<AppState>((set) => ({
   focusedPanelId: null,
   mainClaudeSessionId: null,
   mainEc2SessionId: null,
+  mainEc2DiagSessionId: null,
+  activeDeployExecId: null,
+  activeUploadId: null,
+  diagPanelOpen: false,
 
   addEvent: (source, message) =>
     set((state) => ({
@@ -103,4 +120,12 @@ export const useAppStore = create<AppState>((set) => ({
   setMainClaudeSessionId: (id) => set({ mainClaudeSessionId: id }),
 
   setMainEc2SessionId: (id) => set({ mainEc2SessionId: id }),
+
+  setMainEc2DiagSessionId: (id) => set({ mainEc2DiagSessionId: id }),
+
+  setActiveDeployExecId: (id) => set({ activeDeployExecId: id }),
+
+  setActiveUploadId: (id) => set({ activeUploadId: id }),
+
+  setDiagPanelOpen: (open) => set({ diagPanelOpen: open }),
 }));

@@ -87,6 +87,7 @@ export async function listenSshHostKeyPrompt(
 
 // SFTP — 사양서 §3.2 [2] jar 업로드.
 export type SftpUploadOptions = {
+  upload_id?: string;
   host: string;
   port?: number;
   user: string;
@@ -97,6 +98,10 @@ export type SftpUploadOptions = {
 
 export async function sftpUpload(opts: SftpUploadOptions): Promise<number> {
   return await invoke<number>("sftp_upload", { opts });
+}
+
+export async function sftpUploadKill(uploadId: string): Promise<void> {
+  await invoke("sftp_upload_kill", { uploadId });
 }
 
 // SSH exec — 사양서 §3.2 [3]/[4] (deploy.sh, monitor 등 단일 명령 + exit code).
@@ -123,6 +128,10 @@ export type ExecDonePayload = {
 
 export async function sshExec(opts: SshExecOptions): Promise<string> {
   return await invoke<string>("ssh_exec", { opts });
+}
+
+export async function sshExecKill(execId: string): Promise<void> {
+  await invoke("ssh_exec_kill", { execId });
 }
 
 export async function listenSshExecLine(

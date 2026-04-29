@@ -130,6 +130,17 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     });
   }
 
+  function updateMonitoring(patch: Partial<Config["monitoring"]>) {
+    if (state.status !== "ready") return;
+    setState({
+      status: "ready",
+      config: {
+        ...state.config,
+        monitoring: { ...state.config.monitoring, ...patch },
+      },
+    });
+  }
+
   async function handleSave() {
     if (state.status !== "ready") return;
     setSaving(true);
@@ -509,6 +520,115 @@ export function SettingsModal({ open, onOpenChange }: Props) {
               SSH exec 채널로 실행. cd 등 cwd 이동은 명령에 직접 포함하세요.
             </p>
           </div>
+
+          <div className="my-1 h-px bg-foreground/20" />
+          <div className="text-xs font-semibold text-card-foreground">
+            모니터링 / ERROR 감지 (사양서 §3.2 [4] / §3.6)
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="monitor-cmd">
+              로그 모니터 명령 (메인 SSH에 자동 입력)
+            </label>
+            <input
+              id="monitor-cmd"
+              value={config.monitoring.log_command}
+              onChange={(e) => updateMonitoring({ log_command: e.target.value })}
+              disabled={!isReady}
+              placeholder="예: sudo journalctl -u ***REDACTED-SERVICE*** -f"
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT_CLASS}
+            />
+            <p className="text-xs text-muted-foreground">
+              메인 SSH 연결 직후 자동 입력 (운영 중 ERROR도 잡기 위해 attempt와 무관하게 활성).
+            </p>
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="error-pat">
+              ERROR 정규식 패턴
+            </label>
+            <input
+              id="error-pat"
+              value={config.monitoring.error_pattern}
+              onChange={(e) => updateMonitoring({ error_pattern: e.target.value })}
+              disabled={!isReady}
+              placeholder="예: \[ERROR\]"
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT_CLASS}
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <div className="grid gap-1">
+              <label className="text-xs text-muted-foreground" htmlFor="ctx-before">
+                직전 N줄
+              </label>
+              <input
+                id="ctx-before"
+                type="number"
+                min={0}
+                value={config.monitoring.context_lines_before}
+                onChange={(e) =>
+                  updateMonitoring({
+                    context_lines_before: Math.max(
+                      0,
+                      Number.parseInt(e.target.value, 10) || 0,
+                    ),
+                  })
+                }
+                disabled={!isReady}
+                className={INPUT_CLASS}
+              />
+            </div>
+            <div className="grid gap-1">
+              <label className="text-xs text-muted-foreground" htmlFor="ctx-after">
+                직후 N줄
+              </label>
+              <input
+                id="ctx-after"
+                type="number"
+                min={0}
+                value={config.monitoring.context_lines_after}
+                onChange={(e) =>
+                  updateMonitoring({
+                    context_lines_after: Math.max(
+                      0,
+                      Number.parseInt(e.target.value, 10) || 0,
+                    ),
+                  })
+                }
+                disabled={!isReady}
+                className={INPUT_CLASS}
+              />
+            </div>
+            <div className="grid gap-1">
+              <label className="text-xs text-muted-foreground" htmlFor="ctx-delay">
+                지연 (초)
+              </label>
+              <input
+                id="ctx-delay"
+                type="number"
+                min={0}
+                value={config.monitoring.context_capture_delay_seconds}
+                onChange={(e) =>
+                  updateMonitoring({
+                    context_capture_delay_seconds: Math.max(
+                      0,
+                      Number.parseInt(e.target.value, 10) || 0,
+                    ),
+                  })
+                }
+                disabled={!isReady}
+                className={INPUT_CLASS}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            ERROR 매칭 시 직전 N줄 + 매칭 라인 + 직후 N줄(또는 지연 초까지) + Caused by/stack 라인을 좌측 메인 Claude로 자동 주입.
+          </p>
         </div>
 
         {saveError && (

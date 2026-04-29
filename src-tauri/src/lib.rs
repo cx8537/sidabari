@@ -16,6 +16,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(pty::PtyState::default()))
         .manage(Arc::new(ssh::SshState::default()))
+        .manage(Arc::new(ssh_exec::ExecState::default()))
+        .manage(Arc::new(sftp::SftpState::default()))
         .manage(Arc::new(build::BuildState::default()))
         .invoke_handler(tauri::generate_handler![
             config::load_config,
@@ -31,7 +33,9 @@ pub fn run() {
             ssh::ssh_disconnect,
             ssh::ssh_accept_host_key,
             sftp::sftp_upload,
+            sftp::sftp_upload_kill,
             ssh_exec::ssh_exec,
+            ssh_exec::ssh_exec_kill,
             build::build_start,
             build::build_kill,
         ])

@@ -1,19 +1,97 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { usePanelFocus } from "@/hooks/usePanelFocus";
-import { Terminal } from "@/components/terminal/Terminal";
-import { CLAUDE_TAB_LINES } from "@/components/terminal/mockContent";
+import { PtyTerminal } from "@/components/terminal/PtyTerminal";
+import { AddClaudeTabModal } from "@/components/modals/AddClaudeTabModal";
+import { loadConfig, saveConfig } from "@/lib/config";
 
-const MOCK_TABS = [
-  { id: "1", label: "프론트엔드" },
-  { id: "2", label: "백엔드" },
-];
+// 사양서 §4.2 / §5.2 — 추가 Claude Code 탭들.
+// 각 탭은 directory에서 `claude -c`로 실행. config.claude_code_sessions.additional에 저장 →
+// 다음 실행 시 자동으로 살아남.
+
+type Tab = {
+  // tab 식별자 (PtyTerminal key 안정화 위함). directory를 그대로 쓰면 같은 디렉토리 두 번 추가 시 충돌.
+  id: string;
+  label: string;
+  directory: string;
+};
+
+function basename(p: string): string {
+  const last = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return last >= 0 ? p.slice(last + 1) : p;
+}
 
 export function ClaudeTabsPanel() {
-  const [activeId, setActiveId] = useState("1");
   const { isFocused, onMouseDown } = usePanelFocus("claude-tabs");
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  // 마운트 시 config의 additional 배열 로드 → 자동 spawn (사양서 §5.1)
+  useEffect(() => {
+    let cancelled = false;
+    loadConfig()
+      .then((c) => {
+        if (cancelled) return;
+        const arr = c.claude_code_sessions.additional;
+        const initial: Tab[] = arr.map((entry) => ({
+          id: crypto.randomUUID(),
+          label: entry.label.trim() || basename(entry.directory),
+          directory: entry.directory,
+        }));
+        setTabs(initial);
+        setActiveId(initial[0]?.id ?? null);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function persistTabs(next: Tab[]) {
+    try {
+      const cfg = await loadConfig();
+      cfg.claude_code_sessions.additional = next.map((t) => ({
+        label: t.label,
+        directory: t.directory,
+        auto_start: true,
+      }));
+      await saveConfig(cfg);
+    } catch {
+      // 저장 실패해도 메모리 상태 유지 — 다음 변경 시 재시도. 사용자 안내는 별도 콘솔 이벤트로.
+    }
+  }
+
+  async function handleAdd(directory: string) {
+    const trimmed = directory.trim();
+    if (!trimmed) return;
+    // 중복 디렉토리는 같은 cwd에서 또 다른 세션으로 spawn — 허용. 사용자가 의도적이면 가능.
+    const newTab: Tab = {
+      id: crypto.randomUUID(),
+      label: basename(trimmed),
+      directory: trimmed,
+    };
+    const next = [...tabs, newTab];
+    setTabs(next);
+    setActiveId(newTab.id);
+    await persistTabs(next);
+  }
+
+  async function handleRemove(id: string) {
+    const next = tabs.filter((t) => t.id !== id);
+    setTabs(next);
+    if (activeId === id) {
+      setActiveId(next[0]?.id ?? null);
+    }
+    await persistTabs(next);
+  }
 
   return (
     <div className="flex h-full flex-col gap-[3px] bg-background" onMouseDown={onMouseDown}>
@@ -23,7 +101,7 @@ export function ClaudeTabsPanel() {
           isFocused ? "bg-secondary" : "bg-card",
         )}
       >
-        {MOCK_TABS.map((tab) => (
+        {tabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
@@ -34,9 +112,16 @@ export function ClaudeTabsPanel() {
                 ? "bg-secondary text-secondary-foreground ring-1 ring-ring ring-inset"
                 : "text-muted-foreground hover:bg-muted",
             )}
+            title={tab.directory}
           >
-            {tab.label}
-            <X className="size-3 opacity-50 hover:opacity-100" />
+            <span className="max-w-[12rem] truncate">{tab.label}</span>
+            <X
+              className="size-3 opacity-50 hover:opacity-100"
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleRemove(tab.id);
+              }}
+            />
           </button>
         ))}
         <Button
@@ -44,13 +129,42 @@ export function ClaudeTabsPanel() {
           variant="ghost"
           className="ml-1 rounded-full bg-foreground/15 hover:bg-foreground/25"
           title="새 탭"
+          onClick={() => setAddOpen(true)}
         >
           <Plus />
         </Button>
       </div>
-      <div className="min-h-0 flex-1 mx-0.5">
-        <Terminal key={activeId} initialLines={CLAUDE_TAB_LINES[activeId]} />
+      <div className="min-h-0 flex-1 mx-0.5 relative">
+        {!loaded ? (
+          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+            설정 불러오는 중...
+          </div>
+        ) : tabs.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+            탭 없음 — 우상단 + 버튼으로 추가
+          </div>
+        ) : (
+          // 모든 탭 mount 유지 (활성만 보이게). PtyTerminal unmount = SSH/PTY 종료라 비활성에도 살아있어야.
+          tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={cn(
+                "absolute inset-0",
+                activeId === tab.id ? "visible" : "invisible pointer-events-none",
+              )}
+            >
+              <PtyTerminal
+                spawn={{
+                  command: "claude",
+                  args: ["-c"],
+                  cwd: tab.directory,
+                }}
+              />
+            </div>
+          ))
+        )}
       </div>
+      <AddClaudeTabModal open={addOpen} onOpenChange={setAddOpen} onAdd={handleAdd} />
     </div>
   );
 }
