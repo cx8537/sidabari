@@ -239,3 +239,98 @@
 - [ ] Tauri command 입력이 검증되는가?
 - [ ] 자동 실행이 사용자 승인을 거치는가?
 - [ ] `cargo audit` / `npm audit` 통과하는가?
+
+## 부록 C: UI 스타일 가이드 (1차 UI 완료 기준)
+
+이 도구의 UI는 다크 테마 단일 모드. 신규 컴포넌트(특히 모달/다이얼로그·설정 화면 등)는 이 가이드를 따라 색상·간격·구조 일관성을 유지한다. **색상은 항상 토큰을 사용하고, 직접 hex를 박지 않는다.**
+
+### C.1 색상 토큰 (App.css `.dark` 정의)
+
+| 변수 | 값 | 용도 |
+|---|---|---|
+| `--background` | `#191A1C` | 본문 배경 (터미널·콘솔·Claude Code 표시 영역) |
+| `--card` | `#26282B` | 타이틀바 배경, 모달 배경, 메인 툴바 |
+| `--card-foreground` | `#CCCED3` | 타이틀바·카드 위 텍스트 |
+| `--foreground` | `#CCCED3` | 일반 본문 텍스트 |
+| `--muted-foreground` | `#B0B3B7` | placeholder, 타임스탬프, 비활성 |
+| `--primary` | `#404348` | 기본 버튼 배경 |
+| `--primary-foreground` | `#E4E6EA` | 버튼 텍스트, 툴바 강조 텍스트 |
+| `--secondary` | `#25324D` | 활성 탭, 포커스 받은 패널 타이틀바 |
+| `--secondary-foreground` | `#CCCED3` | 활성 탭 텍스트 |
+| `--ring` | `#35538F` | 활성 탭 ring, focus ring |
+| `--destructive` | oklch(0.704 0.191 22.216) | 에러/중단 (MONITOR 이벤트, 강제 중단 아이콘) |
+| `--border` | oklch(1 0 0 / 0.08) | 패널 외곽 (사용 최소) |
+| `--accent-gold` (custom) | `#B28B55` | 또돌이 브랜드, BUILD/UPLOAD/DEPLOY 콘솔 태그 |
+| `--action-green` (custom) | `#508956` | 시작/실행 액션 아이콘 (시도 시작·분석 요청) |
+
+**신규 색 토큰 추가**:
+1. `App.css` `.dark` 블록에 `--name: hex;`
+2. `App.css` `@theme inline` 블록에 `--color-name: var(--name);` → Tailwind 유틸리티(`text-name`, `bg-name`) 자동 생성
+
+### C.2 텍스트 위계 (3단계)
+
+| 단계 | 토큰 | 사용처 |
+|---|---|---|
+| 강조 | `text-accent-gold` 또는 `text-primary-foreground` | 브랜드, 강조 라벨, 버튼 텍스트, 상태 값 |
+| 일반 | `text-foreground` 또는 `text-card-foreground` | 패널 타이틀, 본문 일반 |
+| 흐림 | `text-muted-foreground` | placeholder, 타임스탬프, 비활성 |
+
+### C.3 버튼 (`src/components/ui/button.tsx`)
+
+- 기본은 `<Button>` 컴포넌트. 직접 `<button>` 작성하지 말 것.
+- variant: 대부분 `default` (생략 가능). `ghost`는 보조 액션. `outline`은 현재 미사용.
+- size:
+  - `sm` (h-7): 메인 툴바
+  - `xs` (h-6): 패널 타이틀바 안
+  - `icon-sm` (28×28): 메인 툴바 아이콘 전용
+  - `icon-xs` (24×24): 패널 내 아이콘 전용
+- 아이콘 의미색은 `className="[&_svg]:text-X"`로:
+  - 시작/실행: `text-action-green`
+  - 중단/위험/에러: `text-destructive`
+  - 일반: 별도 지정 없이 텍스트 색 상속
+- hover는 default variant에서 `hover:bg-primary/80` (button.tsx에 정의됨).
+
+### C.4 레이아웃·패널
+
+- **MainLayout panel wrapper**: `p-[3px]` (외측 시각 여백을 내측 separator(6px)의 절반과 일치시킴)
+- **패널 컴포넌트 root**: `flex h-full flex-col bg-background` + `onMouseDown={onMouseDown}`
+- **패널 타이틀바**: `mx-0.5 mt-0.5 rounded-md transition-colors` + 포커스 분기 (`isFocused ? "bg-secondary" : "bg-card"`)
+- **포커스 추적**: `usePanelFocus(panelId)` hook 사용. 새 PanelId 필요하면 `src/store/useAppStore.ts`의 `PanelId` 타입에 추가.
+- **리사이즈 핸들**: `ResizeHandle` 컴포넌트 그대로 사용 (6px 히트존 + 1px 시각선 가운데).
+- **세로 구분선** (toolbar 안): `<div aria-hidden="true" className="h-5 w-px bg-foreground/20" />`
+
+### C.5 탭 패턴 (참조: `ClaudeTabsPanel`)
+
+- 활성: `ring-1 ring-ring ring-inset bg-secondary text-secondary-foreground` (border 사용 안 함 — 활성/비활성 간 레이아웃 시프트 방지)
+- 비활성: `text-muted-foreground hover:bg-muted`
+- 추가 (+) 버튼: `size="icon-xs" variant="ghost" rounded-full bg-foreground/15 hover:bg-foreground/25`
+
+### C.6 모달/다이얼로그 작성 규약
+
+(1차 UI 시점 미구현. 첫 모달 작성 시 이 규약을 적용하고, 이후 모든 모달이 동일 패턴을 유지한다.)
+
+- **추가**: `npx shadcn@latest add dialog`
+- **콘텐츠 배경**: `bg-card` (본문 #191A1C보다 도드라지게)
+- **텍스트**: 헤더 `text-card-foreground` (강조 필요 시 `text-accent-gold`). 본문 `text-card-foreground`. 부가 설명 `text-muted-foreground`.
+- **모서리**: `rounded-lg` (패널 타이틀바 `rounded-md`보다 한 단계 큼)
+- **닫기 버튼**: 우측 상단 `<X />`, `<Button size="icon-sm" variant="ghost">`
+- **액션 버튼 영역**: 우측 하단 정렬. 주 액션은 default variant. 취소는 ghost variant.
+- **폼 입력**: `<input className="bg-background border border-input rounded-md px-3 py-2 text-sm placeholder:text-muted-foreground">` 또는 shadcn `<Input>` 추가 후 사용.
+- **모달 내부 구분선** (필요 시): `<div className="h-px bg-foreground/20" />`
+- **백드롭(overlay)**: shadcn 기본값 사용. 수정하지 말 것.
+- **사양서 §4.5 준수**: ERROR 감지로 모달 자동 표시 X. 사람의 명시적 액션(예: '분석 요청' 클릭) 시점에만 띄움.
+
+### C.7 다크 테마 전제
+
+- `index.html`의 `<html lang="en" class="dark" style="color-scheme: dark">`로 항상 다크.
+- 라이트 모드 미지원. `:root` 블록은 shadcn 기본값 그대로 (사용 안 됨).
+- 향후 토글 추가 시 `:root` 블록에도 사용자 정의 색을 정의하고 `class="dark"`를 동적 토글.
+
+### C.8 신규 컴포넌트 체크리스트 (PR 전)
+
+- [ ] 색은 토큰 사용. 일회성 hex는 명확한 의도(예: `text-[#E4E6EA]` 한 곳에서 정합성)이거나 신규 토큰 추가로 처리.
+- [ ] 패널이면 `usePanelFocus(panelId)` 적용해 포커스 표시 일관 유지.
+- [ ] 버튼이면 `<Button>` 사용. 의미 아이콘은 `[&_svg]:text-X` 패턴.
+- [ ] 텍스트 위계(강조/일반/흐림) 명확히.
+- [ ] `npm run build` 통과 후 `npm run dev`로 다크 테마 시각 검증.
+- [ ] 사양서 §4.3 "패널 모듈화"·§4.5 "모달은 사람의 결정 게이트" 정신 준수.
