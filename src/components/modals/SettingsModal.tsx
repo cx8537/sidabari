@@ -214,6 +214,22 @@ export function SettingsModal({ open, onOpenChange }: Props) {
               </Button>
             </div>
           </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="ec2-user">
+              EC2 사용자 이름
+            </label>
+            <input
+              id="ec2-user"
+              value={config.ec2.user}
+              onChange={(e) => updateEc2({ user: e.target.value })}
+              disabled={!isReady}
+              placeholder="예: ec2-user, ubuntu, admin"
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT_CLASS}
+            />
+          </div>
           <div className="grid gap-1">
             <label className="text-xs text-muted-foreground" htmlFor="main-claude-dir">
               메인 Claude Code 작업 디렉토리
