@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 
-const TERMINAL_THEME = {
+export const TERMINAL_THEME = {
   background: "#191A1C",
   foreground: "#CCCED3",
   cursor: "#CCCED3",

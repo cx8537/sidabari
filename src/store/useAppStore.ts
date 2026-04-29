@@ -20,10 +20,14 @@ type AppState = {
   attemptStatus: AttemptStatus;
   consoleEvents: ConsoleEvent[];
   focusedPanelId: PanelId | null;
+  // 좌측 메인 Claude PTY의 현재 활성 sessionId (사양서 §3.6 — 분석 요청 텍스트 주입 대상).
+  // 폴백 셸 전환/재시작 시 변경됨. 세션 없을 때 null.
+  mainClaudeSessionId: string | null;
   addEvent: (source: string, message: string) => void;
   startAttempt: () => void;
   abortAttempt: () => void;
   setFocusedPanel: (id: PanelId | null) => void;
+  setMainClaudeSessionId: (id: string | null) => void;
 };
 
 function newEvent(source: string, message: string): ConsoleEvent {
@@ -39,6 +43,7 @@ export const useAppStore = create<AppState>((set) => ({
   attemptStatus: "idle",
   consoleEvents: [newEvent("SYSTEM", "또돌이 시작 (1단계 UI Mock)")],
   focusedPanelId: null,
+  mainClaudeSessionId: null,
 
   addEvent: (source, message) =>
     set((state) => ({
@@ -70,4 +75,6 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   setFocusedPanel: (id) => set({ focusedPanelId: id }),
+
+  setMainClaudeSessionId: (id) => set({ mainClaudeSessionId: id }),
 }));
