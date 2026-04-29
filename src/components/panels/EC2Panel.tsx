@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Send, Stethoscope } from "lucide-react";
+import { ListChecks, Send, Stethoscope } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/useAppStore";
@@ -20,8 +20,52 @@ type ConnectState =
 
 // 사양서 §3.6 시점 B — 분석 요청 시 마지막 N라인을 좌측 Claude로 주입.
 // "이전 컨텍스트는 Claude Code 대화 히스토리에 의존, 재전송 안 함" — 명령+출력만 단순 전달.
-const ANALYZE_TAIL_LINES = 50;
-const RING_BUFFER_MAX = 200;
+// 자료 일괄 수집 결과(top/journalctl/jstack 등) 한 번에 잡기 위해 buffer/tail 크기 충분히 확보.
+const ANALYZE_TAIL_LINES = 500;
+const RING_BUFFER_MAX = 2000;
+
+// 사양서 §3.3 [D3] — 진단 명령 라이브러리. ***REDACTED-SERVICE*** 서비스에 대한 일괄 수집.
+// PID는 systemd가 알려주는 MainPID로 동적 결정. JVM 명령은 PID 없으면 생략.
+// 명령은 ; 로 연결해 일부 실패해도 다음 명령 진행 (정보 수집이 목적).
+const COLLECT_COMMAND = [
+  "clear",
+  'PID=$(systemctl show -p MainPID --value ***REDACTED-SERVICE*** 2>/dev/null)',
+  'echo "===== 자료 일괄 수집 (***REDACTED-SERVICE***) ====="',
+  'echo "MainPID=$PID"',
+  'echo ""',
+  'echo "--- uptime ---"',
+  "uptime",
+  'echo ""',
+  'echo "--- df -h ---"',
+  "df -h",
+  'echo ""',
+  'echo "--- free -m ---"',
+  "free -m",
+  'echo ""',
+  'echo "--- vmstat 1 3 ---"',
+  "vmstat 1 3",
+  'echo ""',
+  'echo "--- top -b -n 1 (head 30) ---"',
+  "top -b -n 1 | head -30",
+  'echo ""',
+  'echo "--- systemctl status ***REDACTED-SERVICE*** ---"',
+  "sudo systemctl status ***REDACTED-SERVICE*** --no-pager -l | head -50",
+  'echo ""',
+  'echo "--- journalctl 5min ---"',
+  "sudo journalctl -u ***REDACTED-SERVICE*** --since \"5 minutes ago\" --no-pager | tail -100",
+  'echo ""',
+  'echo "--- ss -tlnp ---"',
+  "sudo ss -tlnp 2>/dev/null",
+  'echo ""',
+  'echo "--- actuator/health ---"',
+  '(curl -sf http://localhost:8080/actuator/health 2>&1 || echo "actuator unreachable")',
+  'echo ""',
+  // systemd PrivateTmp=true 환경에서 외부 jstack은 java의 attach socket(/tmp/.java_pid$PID)에 접근 못 함.
+  // nsenter -t $PID -m으로 java 프로세스의 mount namespace에 진입해 같은 /tmp 보이게 함.
+  // jmap -heap은 JDK 9+에서 deprecated → jcmd GC.heap_info / GC.class_histogram로 대체.
+  'if [ -n "$PID" ]; then echo "--- jstack ---"; sudo nsenter -t $PID -m -- jstack $PID 2>&1 | head -120; echo ""; echo "--- jcmd GC.heap_info ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.heap_info 2>&1 | head -40; echo ""; echo "--- jcmd GC.class_histogram (top 30) ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.class_histogram 2>&1 | head -35; echo ""; echo "--- jstat -gc ---"; sudo jstat -gc $PID 1000 3; else echo "[알림] MainPID 없음 — JVM 명령 생략"; fi',
+  'echo "===== 일괄 수집 종료 ====="',
+].join("; ");
 
 export function EC2Panel({ role }: Props) {
   const addEvent = useAppStore((s) => s.addEvent);
@@ -90,7 +134,7 @@ export function EC2Panel({ role }: Props) {
         const cmd = c.monitoring.log_command.trim();
         if (!cmd) return;
         sshWrite(mainEc2SessionId, `${cmd}\n`).catch(() => {});
-        addEvent("MONITOR", `메인 SSH 연결 — 모니터 명령 자동 입력: ${cmd}`);
+        addEvent("SYSTEM", `메인 SSH 연결 — 모니터 명령 자동 입력: ${cmd}`);
       })
       .catch(() => {});
     return () => {
@@ -129,6 +173,23 @@ export function EC2Panel({ role }: Props) {
       unlisten?.();
     };
   }, [localSessionId]);
+
+  async function handleCollect() {
+    if (!localSessionId) {
+      addEvent("SYSTEM", `[${label}] 자료 일괄 수집 실패 — SSH 세션 비활성`);
+      return;
+    }
+    try {
+      await sshWrite(localSessionId, `${COLLECT_COMMAND}\n`);
+      addEvent(
+        "USER",
+        `[${label}] 자료 일괄 수집 시작 (***REDACTED-SERVICE***) — 완료 후 [분석 요청] 클릭`,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addEvent("SYSTEM", `[${label}] 자료 일괄 수집 실패: ${msg}`);
+    }
+  }
 
   async function handleAnalyze() {
     if (!mainClaudeSessionId) {
@@ -210,6 +271,21 @@ export function EC2Panel({ role }: Props) {
               }
             >
               <Stethoscope /> 진단
+            </Button>
+          )}
+          {role === "diagnostic" && (
+            <Button
+              size="xs"
+              onClick={handleCollect}
+              disabled={!localSessionId}
+              className="[&_svg]:text-action-green"
+              title={
+                !localSessionId
+                  ? "SSH 세션 비활성"
+                  : "***REDACTED-SERVICE*** 진단 명령 일괄 실행 (uptime/df/top/journalctl/jstack 등). 완료 후 [분석 요청]으로 Claude에 전달."
+              }
+            >
+              <ListChecks /> 자료 일괄 수집
             </Button>
           )}
           <Button

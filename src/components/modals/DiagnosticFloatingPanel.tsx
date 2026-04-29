@@ -42,7 +42,7 @@ export function DiagnosticFloatingPanel() {
       dragHandleClassName="diag-drag-handle"
       className="z-50"
     >
-      <div className="flex h-full w-full flex-col rounded-lg bg-background shadow-2xl ring-1 ring-foreground/15 overflow-hidden">
+      <div className="flex h-full w-full flex-col rounded-lg bg-background shadow-2xl ring-2 ring-[#0891B2] overflow-hidden">
         {/* drag handle 헤더 */}
         <div className="diag-drag-handle flex cursor-move items-center justify-between gap-2 bg-card px-3 py-1.5 select-none">
           <span className="text-xs font-semibold text-card-foreground">

@@ -22,6 +22,9 @@ type Props = {
   // 활성 PTY 세션 ID 변경 알림 — 폴백 셸 전환/재시작/언마운트 시 호출.
   // 외부(store 등)가 ptyWrite 대상으로 사용 (사양서 §3.6 분석 요청 텍스트 주입).
   onSessionChange?: (sessionId: string | null) => void;
+  // 최초 spawn 시 지연 (ms). 여러 PtyTerminal이 한 frame에 mount될 때 시차를 주어
+  // claude CLI의 lock 파일/credentials race를 회피한다 (재시작 시 메인+추가 탭 동시 spawn 케이스).
+  spawnDelayMs?: number;
 };
 
 type Status = "starting" | "running" | "exited-fallback" | "stopped" | "error";
@@ -49,7 +52,7 @@ function attachKeyShortcuts(term: XTerminal) {
   });
 }
 
-export function PtyTerminal({ spawn, onExit, onSessionChange }: Props) {
+export function PtyTerminal({ spawn, onExit, onSessionChange, spawnDelayMs }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -92,16 +95,22 @@ export function PtyTerminal({ spawn, onExit, onSessionChange }: Props) {
 
       try {
         unlistenDataRef.current = await listenPtyData(preId, (chunk) => {
-          // cmd.exe `cls`는 \x1b[2J\x1b[H만 보내 xterm scrollback이 남고,
-          // renderer 셀 캐시도 stale 상태로 남아 잔상이 보임.
-          // 직후 \x1b[3J(saved-lines erase)을 주입해 buffer를 깨끗이 + write callback에서
-          // term.refresh로 강제 viewport redraw. alt-screen TUI는 alt buffer 사용으로 영향 없음.
+          // cmd.exe `cls`는 \x1b[2J\x1b[H만 보내 xterm scrollback이 남음.
+          // \x1b[3J(saved-lines erase)을 주입해 buffer를 깨끗이.
+          //
+          // 단 alt-screen TUI(claude 등)는 진입 시 \x1b[?1049h\x1b[2J\x1b[H 패턴을 함께 발사.
+          // 이때 무조건 \x1b[3J을 주입하면 main buffer의 scrollback도 비워져 사용자가 위로 스크롤할 때
+          // 화면이 깨져 보임. 그래서 alt-screen 활성/진입 chunk에서는 보강을 생략.
           const hasClear = chunk.indexOf("\x1b[2J") >= 0;
-          const augmented = hasClear
+          const enteringAlt =
+            chunk.indexOf("\x1b[?1049h") >= 0 || chunk.indexOf("\x1b[?47h") >= 0;
+          const inAlt = term.buffer.active.type === "alternate";
+          const shouldAugment = hasClear && !enteringAlt && !inAlt;
+          const augmented = shouldAugment
             ? chunk.replace(/\x1b\[2J/g, "\x1b[2J\x1b[3J")
             : chunk;
           term.write(augmented, () => {
-            if (hasClear) {
+            if (shouldAugment) {
               term.refresh(0, term.rows - 1);
             }
           });
@@ -232,12 +241,21 @@ export function PtyTerminal({ spawn, onExit, onSessionChange }: Props) {
     });
     resizeObserver.observe(container);
 
-    // 첫 spawn — primary
+    // 첫 spawn — primary. spawnDelayMs가 있으면 시차 후 spawn (claude race 회피).
     phaseRef.current = "primary";
-    void startPty(spawn);
+    let initTimer: number | null = null;
+    const delay = spawnDelayMs ?? 0;
+    if (delay > 0) {
+      initTimer = window.setTimeout(() => {
+        if (!disposedRef.current) void startPty(spawn);
+      }, delay);
+    } else {
+      void startPty(spawn);
+    }
 
     return () => {
       disposedRef.current = true;
+      if (initTimer !== null) window.clearTimeout(initTimer);
       resizeObserver.disconnect();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();

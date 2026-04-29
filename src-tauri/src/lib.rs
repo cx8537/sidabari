@@ -14,6 +14,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Arc::new(pty::PtyState::default()))
         .manage(Arc::new(ssh::SshState::default()))
         .manage(Arc::new(ssh_exec::ExecState::default()))

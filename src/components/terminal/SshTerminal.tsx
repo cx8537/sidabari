@@ -84,13 +84,17 @@ export function SshTerminal({ connect, onSessionChange }: Props) {
     const preId = crypto.randomUUID();
     try {
       unlistenDataRef.current = await listenSshData(preId, (chunk) => {
-        // PTY와 동일하게 cmd-style cls scrollback 보강 (Linux clear는 alt-screen X — 영향 적음).
+        // alt-screen TUI(top, vim 등)와 충돌 방지를 위해 alt 활성/진입 시 보강 생략.
         const hasClear = chunk.indexOf("\x1b[2J") >= 0;
-        const augmented = hasClear
+        const enteringAlt =
+          chunk.indexOf("\x1b[?1049h") >= 0 || chunk.indexOf("\x1b[?47h") >= 0;
+        const inAlt = term.buffer.active.type === "alternate";
+        const shouldAugment = hasClear && !enteringAlt && !inAlt;
+        const augmented = shouldAugment
           ? chunk.replace(/\x1b\[2J/g, "\x1b[2J\x1b[3J")
           : chunk;
         term.write(augmented, () => {
-          if (hasClear) term.refresh(0, term.rows - 1);
+          if (shouldAugment) term.refresh(0, term.rows - 1);
         });
       });
       unlistenClosedRef.current = await listenSshClosed(preId, (reason) => {

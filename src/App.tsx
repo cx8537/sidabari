@@ -3,6 +3,7 @@ import { MainLayout } from "@/components/layout/MainLayout";
 import { HostKeyPromptModal } from "@/components/modals/HostKeyPromptModal";
 import { DiagnosticFloatingPanel } from "@/components/modals/DiagnosticFloatingPanel";
 import { MonitorMatcher } from "@/components/monitor/MonitorMatcher";
+import { SshGraceWatcher } from "@/components/monitor/SshGraceWatcher";
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
       <HostKeyPromptModal />
       <DiagnosticFloatingPanel />
       <MonitorMatcher />
+      <SshGraceWatcher />
     </>
   );
 }

@@ -145,7 +145,9 @@ export function ClaudeTabsPanel() {
           </div>
         ) : (
           // 모든 탭 mount 유지 (활성만 보이게). PtyTerminal unmount = SSH/PTY 종료라 비활성에도 살아있어야.
-          tabs.map((tab) => (
+          // 재시작 시 메인 + 모든 탭이 한 frame에 동시 spawn되면 claude의 lock/credentials 충돌이
+          // 발생해 일부 인스턴스가 silent fail하는 경우 — 인덱스별 시차로 race 회피.
+          tabs.map((tab, idx) => (
             <div
               key={tab.id}
               className={cn(
@@ -159,6 +161,7 @@ export function ClaudeTabsPanel() {
                   args: ["-c"],
                   cwd: tab.directory,
                 }}
+                spawnDelayMs={(idx + 1) * 1500}
               />
             </div>
           ))
