@@ -329,7 +329,7 @@ export function SettingsModal({ open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+      <DialogContent className="max-h-[85vh] overflow-y-auto overflow-x-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="text-accent-gold">설정</DialogTitle>
           <DialogDescription>
@@ -771,7 +771,7 @@ export function SettingsModal({ open, onOpenChange }: Props) {
                   })
                 }
                 disabled={!isReady}
-                className={INPUT_CLASS}
+                className={`${INPUT_CLASS} w-full min-w-0`}
               />
             </div>
             <div className="grid gap-1">
@@ -792,7 +792,7 @@ export function SettingsModal({ open, onOpenChange }: Props) {
                   })
                 }
                 disabled={!isReady}
-                className={INPUT_CLASS}
+                className={`${INPUT_CLASS} w-full min-w-0`}
               />
             </div>
             <div className="grid gap-1">
@@ -813,7 +813,7 @@ export function SettingsModal({ open, onOpenChange }: Props) {
                   })
                 }
                 disabled={!isReady}
-                className={INPUT_CLASS}
+                className={`${INPUT_CLASS} w-full min-w-0`}
               />
             </div>
           </div>
