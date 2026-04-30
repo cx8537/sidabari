@@ -41,12 +41,13 @@ export function Terminal({ initialLines }: Props) {
 
     const term = new XTerminal({
       theme: TERMINAL_THEME,
+      // Win11 우선 — Cascadia Mono(터미널 기본)를 첫 자리에. App.css `--font-mono`와 동일.
       fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "D2Coding", "Malgun Gothic", monospace',
+        '"Cascadia Mono", "Cascadia Code", ui-monospace, Consolas, "SF Mono", Menlo, "Liberation Mono", monospace',
       fontSize: 14,
       fontWeight: "300",
       fontWeightBold: "500",
-      lineHeight: 1.5,
+      lineHeight: 1.3,
       cursorBlink: true,
       cursorStyle: "block",
       convertEol: true,

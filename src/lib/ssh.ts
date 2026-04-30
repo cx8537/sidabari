@@ -96,12 +96,39 @@ export type SftpUploadOptions = {
   remote_path: string;
 };
 
-export async function sftpUpload(opts: SftpUploadOptions): Promise<number> {
-  return await invoke<number>("sftp_upload", { opts });
+// 사양서 §3.2 [2] — 업로드 무결성 보증. backend가 로컬 SHA256을 스트리밍 계산 +
+// 원격 sha256sum exec으로 비교, 일치 시에만 성공 반환. 불일치는 sftpUpload가 reject.
+export type SftpUploadResult = {
+  bytes: number;
+  sha256: string;
+};
+
+export async function sftpUpload(opts: SftpUploadOptions): Promise<SftpUploadResult> {
+  return await invoke<SftpUploadResult>("sftp_upload", { opts });
 }
 
 export async function sftpUploadKill(uploadId: string): Promise<void> {
   await invoke("sftp_upload_kill", { uploadId });
+}
+
+// SFTP 업로드 진행률 — backend에서 200ms throttle로 emit (sftp.rs).
+// bytes_total은 metadata 조회 실패 시 null. speed_bps는 시작 시점 누적 평균.
+// phase는 단계 표시: "uploading" 전송 중, "verifying" 원격 sha256sum 대기 중.
+export type SftpProgressPayload = {
+  upload_id: string;
+  phase: "uploading" | "verifying";
+  bytes_done: number;
+  bytes_total: number | null;
+  speed_bps: number;
+};
+
+export async function listenSftpProgress(
+  uploadId: string,
+  handler: (payload: SftpProgressPayload) => void,
+): Promise<UnlistenFn> {
+  return await listen<SftpProgressPayload>(`sftp:progress:${uploadId}`, (e) => {
+    handler(e.payload);
+  });
 }
 
 // SSH exec — 사양서 §3.2 [3]/[4] (deploy.sh, monitor 등 단일 명령 + exit code).

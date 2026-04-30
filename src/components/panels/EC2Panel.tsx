@@ -4,11 +4,21 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/useAppStore";
 import { usePanelFocus } from "@/hooks/usePanelFocus";
-import { SshTerminal, type SshConnect } from "@/components/terminal/SshTerminal";
+import {
+  SshTerminal,
+  type SshConnect,
+  type SshTerminalApi,
+} from "@/components/terminal/SshTerminal";
 import { ptyWrite } from "@/lib/pty";
 import { listenSshData, sshWrite } from "@/lib/ssh";
 import { loadConfig } from "@/lib/config";
 import { stripAnsi } from "@/lib/ansi";
+import { COLLECT_COMMAND } from "@/lib/diagnostic";
+import {
+  END_MARKER,
+  extractCompletedSegment,
+  parseDiagnosticOutput,
+} from "@/lib/parseDiagnostic";
 
 type Props = {
   role: "main" | "diagnostic";
@@ -18,54 +28,17 @@ type ConnectState =
   | { status: "loading" }
   | { status: "ready"; connect: SshConnect | null };
 
-// 사양서 §3.6 시점 B — 분석 요청 시 마지막 N라인을 좌측 Claude로 주입.
+// 사양서 §3.6 시점 B — 분석 요청 시 현재 터미널 화면(xterm 버퍼)을 좌측 Claude로 주입.
 // "이전 컨텍스트는 Claude Code 대화 히스토리에 의존, 재전송 안 함" — 명령+출력만 단순 전달.
-// 자료 일괄 수집 결과(top/journalctl/jstack 등) 한 번에 잡기 위해 buffer/tail 크기 충분히 확보.
+// 우리 별도 ring buffer를 두지 않고 xterm 본인 버퍼를 직접 읽음 → clear 시 자연스럽게 비어있음
+// (SshTerminal은 \x1b[2J 들어오면 \x1b[3J(scrollback erase)도 함께 실행하도록 augmentation 함).
+// 너무 큰 출력 방지 위해 마지막 N줄로 cap.
 const ANALYZE_TAIL_LINES = 500;
-const RING_BUFFER_MAX = 2000;
 
-// 사양서 §3.3 [D3] — 진단 명령 라이브러리. ***REDACTED-SERVICE*** 서비스에 대한 일괄 수집.
-// PID는 systemd가 알려주는 MainPID로 동적 결정. JVM 명령은 PID 없으면 생략.
-// 명령은 ; 로 연결해 일부 실패해도 다음 명령 진행 (정보 수집이 목적).
-const COLLECT_COMMAND = [
-  "clear",
-  'PID=$(systemctl show -p MainPID --value ***REDACTED-SERVICE*** 2>/dev/null)',
-  'echo "===== 자료 일괄 수집 (***REDACTED-SERVICE***) ====="',
-  'echo "MainPID=$PID"',
-  'echo ""',
-  'echo "--- uptime ---"',
-  "uptime",
-  'echo ""',
-  'echo "--- df -h ---"',
-  "df -h",
-  'echo ""',
-  'echo "--- free -m ---"',
-  "free -m",
-  'echo ""',
-  'echo "--- vmstat 1 3 ---"',
-  "vmstat 1 3",
-  'echo ""',
-  'echo "--- top -b -n 1 (head 30) ---"',
-  "top -b -n 1 | head -30",
-  'echo ""',
-  'echo "--- systemctl status ***REDACTED-SERVICE*** ---"',
-  "sudo systemctl status ***REDACTED-SERVICE*** --no-pager -l | head -50",
-  'echo ""',
-  'echo "--- journalctl 5min ---"',
-  "sudo journalctl -u ***REDACTED-SERVICE*** --since \"5 minutes ago\" --no-pager | tail -100",
-  'echo ""',
-  'echo "--- ss -tlnp ---"',
-  "sudo ss -tlnp 2>/dev/null",
-  'echo ""',
-  'echo "--- actuator/health ---"',
-  '(curl -sf http://localhost:8080/actuator/health 2>&1 || echo "actuator unreachable")',
-  'echo ""',
-  // systemd PrivateTmp=true 환경에서 외부 jstack은 java의 attach socket(/tmp/.java_pid$PID)에 접근 못 함.
-  // nsenter -t $PID -m으로 java 프로세스의 mount namespace에 진입해 같은 /tmp 보이게 함.
-  // jmap -heap은 JDK 9+에서 deprecated → jcmd GC.heap_info / GC.class_histogram로 대체.
-  'if [ -n "$PID" ]; then echo "--- jstack ---"; sudo nsenter -t $PID -m -- jstack $PID 2>&1 | head -120; echo ""; echo "--- jcmd GC.heap_info ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.heap_info 2>&1 | head -40; echo ""; echo "--- jcmd GC.class_histogram (top 30) ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.class_histogram 2>&1 | head -35; echo ""; echo "--- jstat -gc ---"; sudo jstat -gc $PID 1000 3; else echo "[알림] MainPID 없음 — JVM 명령 생략"; fi',
-  'echo "===== 일괄 수집 종료 ====="',
-].join("; ");
+// Dashboard 자동 갱신용 — 자료 일괄 수집 종료 마커가 보일 때까지 SSH stream을 누적해 파싱.
+// 200KB 정도면 jstack/journalctl 포함한 일괄 수집 결과를 충분히 담음.
+// 더 길어지면 옛 텍스트부터 잘라내어 메모리 폭주 방지.
+const COLLECT_BUFFER_MAX = 200_000;
 
 export function EC2Panel({ role }: Props) {
   const addEvent = useAppStore((s) => s.addEvent);
@@ -142,24 +115,46 @@ export function EC2Panel({ role }: Props) {
     };
   }, [role, mainEc2SessionId, addEvent]);
 
-  // 패널 SSH stream을 ring buffer로 캡처 — 사양서 §3.6 시점 B 분석 요청용.
-  // ANSI strip 후 라인 단위 push (ring max 200줄).
-  const ringBufferRef = useRef<string[]>([]);
-  const lineBufferRef = useRef<string>("");
+  // 분석 요청 시 xterm 본인 버퍼를 직접 읽기 위한 API ref. SshTerminal이 채워줌.
+  const sshApiRef = useRef<SshTerminalApi | null>(null);
+
+  // Dashboard 갱신용 — 진단 패널 SSH stream에서 [자료 일괄 수집 종료] 마커 감지 시 파싱.
+  // 진단 역할만 활성. 메인 패널은 주로 journalctl tail이라 노이즈 큼.
+  const collectBufferRef = useRef<string>("");
+  const setLatestDiagnostic = useAppStore((s) => s.setLatestDiagnostic);
   useEffect(() => {
-    ringBufferRef.current = [];
-    lineBufferRef.current = "";
+    if (role !== "diagnostic") return;
     if (!localSessionId) return;
+    collectBufferRef.current = "";
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     listenSshData(localSessionId, (chunk) => {
-      lineBufferRef.current += stripAnsi(chunk);
-      const lines = lineBufferRef.current.split(/\r?\n/);
-      lineBufferRef.current = lines.pop() ?? "";
-      for (const line of lines) {
-        ringBufferRef.current.push(line);
-        if (ringBufferRef.current.length > RING_BUFFER_MAX) {
-          ringBufferRef.current.shift();
+      collectBufferRef.current += stripAnsi(chunk);
+      if (collectBufferRef.current.length > COLLECT_BUFFER_MAX) {
+        collectBufferRef.current = collectBufferRef.current.slice(
+          -COLLECT_BUFFER_MAX,
+        );
+      }
+      // 종료 마커 감지 시 segment 추출 + 파싱
+      if (collectBufferRef.current.includes(END_MARKER)) {
+        const segment = extractCompletedSegment(collectBufferRef.current);
+        if (segment) {
+          try {
+            const metrics = parseDiagnosticOutput(segment);
+            setLatestDiagnostic(metrics);
+            addEvent(
+              "SYSTEM",
+              `[${label}] 자료 일괄 수집 완료 — Dashboard 갱신`,
+            );
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            addEvent("SYSTEM", `[${label}] 진단 파싱 실패: ${msg}`);
+          }
+          // 종료 마커 이후로 buffer 트림 — 같은 segment를 다시 처리하지 않도록.
+          const endIdx = collectBufferRef.current.lastIndexOf(END_MARKER);
+          collectBufferRef.current = collectBufferRef.current.slice(
+            endIdx + END_MARKER.length,
+          );
         }
       }
     })
@@ -172,7 +167,7 @@ export function EC2Panel({ role }: Props) {
       cancelled = true;
       unlisten?.();
     };
-  }, [localSessionId]);
+  }, [role, localSessionId, addEvent, label, setLatestDiagnostic]);
 
   async function handleCollect() {
     if (!localSessionId) {
@@ -199,17 +194,30 @@ export function EC2Panel({ role }: Props) {
       );
       return;
     }
-    const buf = ringBufferRef.current;
-    if (buf.length === 0) {
+    const api = sshApiRef.current;
+    if (!api) {
       addEvent(
         "SYSTEM",
-        `[${label}] 분석 요청 — 캡처된 출력 없음 (SSH 연결 후 명령 실행 필요)`,
+        `[${label}] 분석 요청 실패 — 터미널 미초기화`,
       );
       return;
     }
-    const tail = buf.slice(-ANALYZE_TAIL_LINES);
+    const allLines = api.readBufferLines();
+    if (allLines.length === 0) {
+      addEvent(
+        "SYSTEM",
+        `[${label}] 분석 요청 — 화면에 표시된 내용 없음 (clear 직후이거나 SSH 연결 직후)`,
+      );
+      return;
+    }
+    // 화면에 보이는 (xterm 버퍼) 내용 중 마지막 N줄로 cap.
+    // clear 실행 시 viewport+scrollback 모두 지워지므로 그 이후 출력만 남음.
+    const tail =
+      allLines.length > ANALYZE_TAIL_LINES
+        ? allLines.slice(-ANALYZE_TAIL_LINES)
+        : allLines;
     const text = [
-      `[${label} 패널 — 마지막 ${tail.length}줄]`,
+      `[${label} 패널 — 화면 마지막 ${tail.length}줄]`,
       ...tail,
     ].join("\n");
     // 사양서 §3.6 — 브라켓 페이스트 (자동 전송 X, 사용자가 검토 후 Enter)
@@ -218,7 +226,7 @@ export function EC2Panel({ role }: Props) {
       await ptyWrite(mainClaudeSessionId, wrapped);
       addEvent(
         "USER",
-        `[${label}] Claude에 분석 요청 (${tail.length}줄 컨텍스트 주입)`,
+        `[${label}] Claude에 분석 요청 (${tail.length}줄 화면 내용 주입)`,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -244,7 +252,12 @@ export function EC2Panel({ role }: Props) {
     );
   } else {
     body = (
-      <SshTerminal connect={conn.connect} onSessionChange={handleSessionChange} />
+      <SshTerminal
+        connect={conn.connect}
+        onSessionChange={handleSessionChange}
+        apiRef={sshApiRef}
+        hideConnectingBanner={role === "diagnostic"}
+      />
     );
   }
 

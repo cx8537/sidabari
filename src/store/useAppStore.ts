@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { DiagnosticMetrics } from "@/lib/parseDiagnostic";
 
 export type AttemptStatus =
   | "idle"
@@ -39,6 +40,9 @@ type AppState = {
   // EC2 진단 패널은 floating dialog로 표시 — 사용자가 [진단] 버튼으로 on-demand로 열고
   // 닫을 때 SSH 세션 자동 종료 (DialogContent unmount → SshTerminal cleanup).
   diagPanelOpen: boolean;
+  // 자료 일괄 수집 결과 — Dashboard 탭이 구독해 카드로 표시.
+  // 새 수집이 완료될 때마다 EC2 진단 패널 측 listener가 갱신.
+  latestDiagnostic: DiagnosticMetrics | null;
   addEvent: (source: string, message: string) => void;
   beginAttempt: (attemptId: string) => void;
   finishAttempt: (succeeded: boolean) => void;
@@ -51,6 +55,7 @@ type AppState = {
   setActiveDeployExecId: (id: string | null) => void;
   setActiveUploadId: (id: string | null) => void;
   setDiagPanelOpen: (open: boolean) => void;
+  setLatestDiagnostic: (m: DiagnosticMetrics | null) => void;
 };
 
 function newEvent(source: string, message: string): ConsoleEvent {
@@ -73,6 +78,7 @@ export const useAppStore = create<AppState>((set) => ({
   activeDeployExecId: null,
   activeUploadId: null,
   diagPanelOpen: false,
+  latestDiagnostic: null,
 
   addEvent: (source, message) =>
     set((state) => ({
@@ -128,4 +134,6 @@ export const useAppStore = create<AppState>((set) => ({
   setActiveUploadId: (id) => set({ activeUploadId: id }),
 
   setDiagPanelOpen: (open) => set({ diagPanelOpen: open }),
+
+  setLatestDiagnostic: (latestDiagnostic) => set({ latestDiagnostic }),
 }));

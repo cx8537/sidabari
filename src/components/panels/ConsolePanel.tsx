@@ -31,7 +31,7 @@ function ConsoleLine({ event }: { event: ConsoleEvent }) {
   // MONITOR source는 ERROR/실패 알림 — 메시지 본문도 destructive로 강조 (사용자 요청).
   const isError = event.source === "MONITOR";
   return (
-    <div className="font-mono text-xs leading-relaxed">
+    <div className="font-mono text-xs leading-normal">
       <span className="text-muted-foreground">[{formatTime(event.timestamp)}]</span>
       <span className={cn("ml-2 font-semibold", sourceColor(event.source))}>
         [{event.source}]

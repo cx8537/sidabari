@@ -60,6 +60,10 @@ pub struct Ec2Config {
     pub port: u16,
     pub user: String,
     pub private_key_path: String,
+    // 진단 전용 키. 서버 측 ForceCommand로 잠긴 키를 사용해 Claude가 SSH로 직접 접근할 때
+    // 시스템 변경이 물리적으로 불가능하도록 분리된 키. 미설정 시 [시스템 데이터 수집] 비활성.
+    // 자세한 셋업: docs/ec2-diag-setup/README.md
+    pub diag_private_key_path: String,
 }
 
 impl Default for Ec2Config {
@@ -69,6 +73,7 @@ impl Default for Ec2Config {
             port: 22,
             user: "ubuntu".to_string(),
             private_key_path: String::new(),
+            diag_private_key_path: String::new(),
         }
     }
 }

@@ -24,6 +24,9 @@ export const Ec2ConfigSchema = z.object({
   port: z.number().int().min(1).max(65535),
   user: z.string(),
   private_key_path: z.string(),
+  // 진단 전용 키 — 서버 측 ForceCommand로 잠긴 키 (docs/ec2-diag-setup 참조).
+  // Claude의 [시스템 데이터 수집]이 이 키만 사용하도록 분리.
+  diag_private_key_path: z.string().default(""),
 });
 
 export const SftpConfigSchema = z.object({

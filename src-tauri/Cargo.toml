@@ -32,4 +32,5 @@ russh = "0.45"
 russh-keys = "0.45"
 russh-sftp = "2"
 async-trait = "0.1"
+sha2 = "0.10"
 

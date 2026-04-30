@@ -1,4 +1,5 @@
 mod build;
+mod claude_safety;
 mod config;
 mod known_hosts;
 mod pty;
@@ -39,6 +40,8 @@ pub fn run() {
             ssh_exec::ssh_exec_kill,
             build::build_start,
             build::build_kill,
+            claude_safety::install_claude_safety_rules,
+            claude_safety::claude_safety_rules_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

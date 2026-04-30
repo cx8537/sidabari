@@ -19,9 +19,21 @@ import {
 // SSH 연결 정보 — session_id, rows, cols는 SshTerminal이 채움.
 export type SshConnect = Omit<ConnectOptions, "session_id" | "rows" | "cols">;
 
+// 외부(예: EC2Panel handleAnalyze)에서 터미널 버퍼 내용을 읽을 때 쓰는 API.
+// xterm 본인의 buffer를 그대로 읽으므로 clear(\x1b[2J + \x1b[3J) 이후엔 자연스럽게 비어있음.
+export type SshTerminalApi = {
+  // 현재 xterm 버퍼(viewport + scrollback)의 모든 라인을 텍스트로. trailing 공백 줄은 제거.
+  readBufferLines(): string[];
+};
+
 type Props = {
   connect: SshConnect | null; // null이면 "설정 필요" 표시
   onSessionChange?: (sessionId: string | null) => void;
+  apiRef?: React.MutableRefObject<SshTerminalApi | null>;
+  // true면 연결 직후 "[연결 중: user@host:port]" 헤더 라인을 출력하지 않음.
+  // 진단 플로팅 패널처럼 화면 캡처/녹화 시 IP 노출을 줄이고 싶을 때 사용.
+  // 에러 / 연결 종료 메시지는 영향 받지 않음.
+  hideConnectingBanner?: boolean;
 };
 
 type Status = "idle" | "connecting" | "running" | "closed" | "error";
@@ -47,7 +59,12 @@ function attachKeyShortcuts(term: XTerminal) {
   });
 }
 
-export function SshTerminal({ connect, onSessionChange }: Props) {
+export function SshTerminal({
+  connect,
+  onSessionChange,
+  apiRef,
+  hideConnectingBanner,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -77,9 +94,11 @@ export function SshTerminal({ connect, onSessionChange }: Props) {
     notifySession(null);
     setErrorMsg(null);
     setStatus("connecting");
-    term.writeln(
-      `\x1b[90m[연결 중: ${connect.user}@${connect.host}:${connect.port ?? 22}]\x1b[0m`,
-    );
+    if (!hideConnectingBanner) {
+      term.writeln(
+        `\x1b[90m[연결 중: ${connect.user}@${connect.host}:${connect.port ?? 22}]\x1b[0m`,
+      );
+    }
 
     const preId = crypto.randomUUID();
     try {
@@ -137,12 +156,13 @@ export function SshTerminal({ connect, onSessionChange }: Props) {
 
     const term = new XTerminal({
       theme: TERMINAL_THEME,
+      // Win11 우선 — Cascadia Mono(터미널 기본)를 첫 자리에. App.css `--font-mono`와 동일.
       fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "D2Coding", "Malgun Gothic", monospace',
+        '"Cascadia Mono", "Cascadia Code", ui-monospace, Consolas, "SF Mono", Menlo, "Liberation Mono", monospace',
       fontSize: 14,
       fontWeight: "300",
       fontWeightBold: "500",
-      lineHeight: 1.5,
+      lineHeight: 1.3,
       cursorBlink: true,
       cursorStyle: "block",
       convertEol: false,
@@ -172,6 +192,22 @@ export function SshTerminal({ connect, onSessionChange }: Props) {
 
     termRef.current = term;
     fitRef.current = fit;
+
+    // 외부 노출 API — term 버퍼 직접 읽기. ring buffer 대체.
+    if (apiRef) {
+      apiRef.current = {
+        readBufferLines() {
+          const buf = term.buffer.active;
+          const out: string[] = [];
+          for (let i = 0; i < buf.length; i++) {
+            const line = buf.getLine(i);
+            if (line) out.push(line.translateToString(true));
+          }
+          while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+          return out;
+        },
+      };
+    }
 
     const resizeObserver = new ResizeObserver(() => {
       try {
@@ -205,6 +241,7 @@ export function SshTerminal({ connect, onSessionChange }: Props) {
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
+      if (apiRef) apiRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -184,8 +184,15 @@ pub(crate) async fn establish_handle(
         .map_err(|e| format!("PEM 키 로드 실패 ({}): {}", private_key_path, e))?;
     let key_pair = Arc::new(key);
 
+    // SFTP 처리량 튜닝 (CLAUDE.md / 사양서 §3.2 [2] jar 업로드 효율).
+    //  - window_size: 기본 2 MiB → 16 MiB. SSH 흐름제어 윈도우. 큰 BDP에서 sender stall 감소.
+    //  - maximum_packet_size: 기본 32 KiB → 65535. russh가 65535 초과 시 경고를 찍어 상한.
+    //    (SFTP 자체는 최대 261120 byte 청크를 SSH 트랜스포트가 분할해 보낼 수 있음.)
+    //  쉘/터미널(상호작용) 트래픽엔 영향 거의 없음 — 키 입력은 적은 데이터.
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
+        window_size: 16 * 1024 * 1024,
+        maximum_packet_size: 65535,
         ..Default::default()
     });
 

@@ -12,6 +12,7 @@ import {
   listenBuildLine,
 } from "@/lib/build";
 import {
+  listenSftpProgress,
   listenSshExecDone,
   listenSshExecLine,
   sftpUpload,
@@ -30,6 +31,14 @@ function basename(p: string): string {
 function joinRemote(dir: string, name: string): string {
   const trimDir = dir.replace(/\/+$/, "");
   return `${trimDir}/${name}`;
+}
+
+// 사람 가독성을 위한 단위 포맷. KB까지는 정수, MB부터 소수점 1자리.
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function statusColor(status: AttemptStatus): string {
@@ -100,8 +109,39 @@ export function MainToolbar() {
     // upload_id를 frontend에서 생성 → store에 등록 → backend kill 가능.
     const uploadId = crypto.randomUUID();
     setActiveUploadId(uploadId);
+
+    // 진행률 표시 — backend는 200ms마다 emit, 업로드 단계 콘솔 라인은 1초에 1번으로 throttle.
+    // verifying 단계 진입은 1회성 알림이므로 별도 처리.
+    let unlistenProgress: (() => void) | null = null;
+    let lastConsoleEmit = 0;
+    let verifyingLogged = false;
     try {
-      const bytes = await sftpUpload({
+      unlistenProgress = await listenSftpProgress(uploadId, (p) => {
+        if (p.phase === "verifying") {
+          if (!verifyingLogged) {
+            verifyingLogged = true;
+            addEvent("UPLOAD", `[검증 중] 원격 sha256sum 대조...`);
+          }
+          return;
+        }
+        // phase === "uploading"
+        const now = Date.now();
+        if (now - lastConsoleEmit < 1000) return;
+        lastConsoleEmit = now;
+        const pctText =
+          p.bytes_total && p.bytes_total > 0
+            ? ` (${Math.floor((p.bytes_done * 100) / p.bytes_total)}%)`
+            : "";
+        const totalText = p.bytes_total
+          ? ` / ${formatBytes(p.bytes_total)}`
+          : "";
+        addEvent(
+          "UPLOAD",
+          `   ${formatBytes(p.bytes_done)}${totalText}${pctText} @ ${formatBytes(p.speed_bps)}/s`,
+        );
+      });
+
+      const result = await sftpUpload({
         upload_id: uploadId,
         host: e2.host,
         port: e2.port,
@@ -110,8 +150,13 @@ export function MainToolbar() {
         local_path: localPath,
         remote_path: remotePath,
       });
+      unlistenProgress?.();
+      unlistenProgress = null;
       setActiveUploadId(null);
-      addEvent("UPLOAD", `[업로드 완료] ${bytes.toLocaleString()} bytes`);
+      addEvent(
+        "UPLOAD",
+        `[업로드 완료] ${result.bytes.toLocaleString()} bytes — sha256:${result.sha256.slice(0, 12)}…`,
+      );
       // 사양서 §3.7 — 업로드 await 완료 후라도 abort 상태면 다음 단계 진행 X.
       if (!isStillRunning()) {
         addEvent("MONITOR", "[중단] attempt 비활성 — 배포 단계 생략");
@@ -120,6 +165,8 @@ export function MainToolbar() {
       // 사양서 §3.2 [3] — 자동으로 deploy.sh 실행 (실패 시 즉시 멈춤).
       await runDeploy(cfg);
     } catch (e) {
+      unlistenProgress?.();
+      unlistenProgress = null;
       setActiveUploadId(null);
       const msg = e instanceof Error ? e.message : String(e);
       addEvent("MONITOR", `[업로드 실패] ${msg}`);
@@ -301,7 +348,7 @@ export function MainToolbar() {
         className="[&_svg]:text-action-green"
         title="새 Attempt 시작 (사양서 §3.1)"
       >
-        <Play /> {starting ? "시작 중..." : "시도 시작"}
+        <Play /> {starting ? "시작 중..." : "백엔드 배포 시작"}
       </Button>
       <Button
         size="sm"

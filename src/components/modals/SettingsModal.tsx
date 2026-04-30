@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, FolderOpen } from "lucide-react";
+import { Eye, EyeOff, FolderOpen, ShieldCheck } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Dialog,
@@ -12,6 +12,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { type Config, ConfigSchema, loadConfig, saveConfig } from "@/lib/config";
+import {
+  claudeSafetyRulesStatus,
+  installClaudeSafetyRules,
+} from "@/lib/claudeSafety";
 import { useAppStore } from "@/store/useAppStore";
 
 type Props = {
@@ -33,7 +37,13 @@ const DEFAULT_CONFIG: Config = ConfigSchema.parse({
     main: { label: "", directory: "", auto_start: false },
     additional: [],
   },
-  ec2: { host: "", port: 22, user: "ubuntu", private_key_path: "" },
+  ec2: {
+    host: "",
+    port: 22,
+    user: "ubuntu",
+    private_key_path: "",
+    diag_private_key_path: "",
+  },
   sftp: { use_same_as_ssh: true, remote_upload_path: "" },
   deploy: {
     build_command: "",
@@ -64,7 +74,15 @@ export function SettingsModal({ open, onOpenChange }: Props) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showHost, setShowHost] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [showDiagKey, setShowDiagKey] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
+  const [safetyInstalling, setSafetyInstalling] = useState(false);
+  const [safetyMessage, setSafetyMessage] = useState<
+    | { kind: "ok"; text: string }
+    | { kind: "err"; text: string }
+    | { kind: "info"; text: string }
+    | null
+  >(null);
 
   useEffect(() => {
     if (!open) return;
@@ -74,10 +92,27 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     setPickError(null);
     setShowHost(false);
     setShowKey(false);
+    setShowDiagKey(false);
+    setSafetyMessage(null);
     loadConfig()
       .then((config) => {
         if (cancelled) return;
         setState({ status: "ready", config });
+        // 안전 규칙 설치 상태를 비동기로 표시 (작업 디렉토리 있을 때만)
+        const dir = config.claude_code_sessions.main.directory;
+        if (dir.trim() !== "") {
+          claudeSafetyRulesStatus(dir)
+            .then((report) => {
+              if (cancelled) return;
+              if (report) {
+                setSafetyMessage({
+                  kind: "info",
+                  text: `이미 설치됨: deny ${report.deny_count}개 (${report.installed_path})`,
+                });
+              }
+            })
+            .catch(() => {});
+        }
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -141,6 +176,7 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     });
   }
 
+
   async function handleSave() {
     if (state.status !== "ready") return;
     setSaving(true);
@@ -175,6 +211,64 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setPickError(message);
+    }
+  }
+
+  async function handlePickDiagKey() {
+    setPickError(null);
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "진단 전용 키 (ForceCommand로 잠긴 키) 선택",
+        filters: [
+          { name: "PEM/Key", extensions: ["pem", "key"] },
+          { name: "모든 파일", extensions: ["*"] },
+        ],
+      });
+      if (typeof selected === "string") {
+        updateEc2({ diag_private_key_path: selected });
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setPickError(message);
+    }
+  }
+
+  async function handleInstallSafetyRules() {
+    if (state.status !== "ready") return;
+    const dir = state.config.claude_code_sessions.main.directory.trim();
+    if (dir === "") {
+      setSafetyMessage({
+        kind: "err",
+        text: "메인 Claude 작업 디렉토리를 먼저 설정하세요",
+      });
+      return;
+    }
+    setSafetyInstalling(true);
+    setSafetyMessage(null);
+    try {
+      const report = await installClaudeSafetyRules(dir);
+      const parts = [
+        report.created ? "신규 생성" : "병합 완료",
+        `deny ${report.deny_count}개 추가`,
+      ];
+      if (report.backed_up_path) {
+        parts.push(`백업: ${report.backed_up_path}`);
+      }
+      setSafetyMessage({
+        kind: "ok",
+        text: `${parts.join(" · ")} → ${report.installed_path}`,
+      });
+      addEvent(
+        "USER",
+        `Claude 안전 규칙 설치 — ${dir} (deny ${report.deny_count})`,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSafetyMessage({ kind: "err", text: msg });
+    } finally {
+      setSafetyInstalling(false);
     }
   }
 
@@ -375,6 +469,103 @@ export function SettingsModal({ open, onOpenChange }: Props) {
             </p>
             {pickError && (
               <p className="text-xs text-destructive">파일 선택 실패: {pickError}</p>
+            )}
+          </div>
+
+          <div className="my-1 h-px bg-foreground/20" />
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-card-foreground">
+            <ShieldCheck className="size-3.5 text-action-green" />
+            Claude 시스템 진단 안전장치 (CLAUDE.md §1.2 / §1.3)
+          </div>
+          <p className="text-xs text-muted-foreground">
+            메인 Claude가 EC2에 직접 SSH로 접속해 진단 정보를 수집할 때 사용하는 분리된 안전장치.
+            서버 측 ForceCommand로 잠긴 진단 전용 키를 별도 등록한다.
+            셋업 가이드: <span className="font-mono">docs/ec2-diag-setup/README.md</span>
+          </p>
+
+          <div className="grid gap-1">
+            <label
+              className="text-xs text-muted-foreground"
+              htmlFor="diag-pem-path"
+            >
+              진단 전용 키 경로 (ForceCommand로 잠긴 키)
+            </label>
+            <div className="flex items-center gap-1.5">
+              <input
+                id="diag-pem-path"
+                type={showDiagKey ? "text" : "password"}
+                value={config.ec2.diag_private_key_path}
+                readOnly
+                disabled={!isReady}
+                placeholder="가이드대로 발급한 진단 전용 키 (.pem) 선택"
+                autoComplete="off"
+                spellCheck={false}
+                className={INPUT_CLASS}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="default"
+                onClick={() => setShowDiagKey((v) => !v)}
+                aria-pressed={showDiagKey}
+                title={showDiagKey ? "감추기" : "보기"}
+              >
+                {showDiagKey ? <EyeOff /> : <Eye />} 보기
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="default"
+                onClick={handlePickDiagKey}
+                disabled={!isReady}
+                title="파일 선택"
+              >
+                <FolderOpen /> 경로
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              미설정 시 [시스템 데이터 수집] 버튼이 비활성됩니다. 배포용 키와 반드시 분리하세요.
+            </p>
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground">
+              로컬 보조 방어선 — Claude Code 권한 deny 규칙
+            </label>
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                variant="outline"
+                size="default"
+                onClick={handleInstallSafetyRules}
+                disabled={
+                  !isReady ||
+                  safetyInstalling ||
+                  config.claude_code_sessions.main.directory.trim() === ""
+                }
+                title="메인 Claude 작업 디렉토리의 .claude/settings.local.json에 위험 명령 deny 규칙 설치 (병합)"
+              >
+                <ShieldCheck />
+                {safetyInstalling ? "설치 중..." : "안전 규칙 설치"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              rm/systemctl stop/scp/sftp/sudo 등 시스템 변경 패턴을 메인 Claude의
+              <span className="font-mono"> .claude/settings.local.json</span>에 deny로 추가.
+              기존 설정과 병합되며, 기존 파일은 자동 백업됩니다.
+            </p>
+            {safetyMessage && (
+              <p
+                className={
+                  safetyMessage.kind === "ok"
+                    ? "text-xs text-action-green"
+                    : safetyMessage.kind === "err"
+                      ? "text-xs text-destructive"
+                      : "text-xs text-muted-foreground"
+                }
+              >
+                {safetyMessage.text}
+              </p>
             )}
           </div>
 
