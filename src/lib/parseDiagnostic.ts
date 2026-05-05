@@ -65,6 +65,10 @@ function extractSection(text: string, header: string): string | null {
 }
 
 export function parseDiagnosticOutput(text: string): DiagnosticMetrics {
+  // SSH PTY는 라인 종결자가 CRLF — split("\n") 후 각 라인에 `\r`이 남아
+  // `\/$` 같은 end-of-line 앵커 정규식이 모두 실패한다 (Disk 카드가 비는 원인).
+  // 진입 시점에 한 번에 정규화해 모든 정규식을 안전하게 만든다.
+  text = text.replace(/\r/g, "");
   const m: DiagnosticMetrics = { collectedAt: Date.now() };
 
   // Load average — uptime 또는 top 헤더
