@@ -1,8 +1,8 @@
 [package]
 name = "sidabari"
 version = "0.1.0"
-description = "Sidabari: 1인용 Claude Code 바이브 코딩 자동화 도구"
-authors = []
+description = "Sidabari: 1인용 Claude Code 바이브 코딩 자동화 도구. 코드 100% Claude Code 작성."
+authors = ["Claude Code (Anthropic) <noreply@anthropic.com>", "cx8537 <cx8537@naver.com>"]
 edition = "2021"
 license = "MIT"
 

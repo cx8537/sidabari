@@ -4,6 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
+  "author": "Claude Code (Anthropic) <noreply@anthropic.com>",
+  "contributors": [
+    "cx8537 <cx8537@naver.com> (요구사항·사양·검수)"
+  ],
+  "description": "1인용 Claude Code 바이브 코딩 자동화 도구. 코드·문서 100% Claude Code 작성·유지보수.",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

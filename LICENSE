@@ -1,6 +1,12 @@
 MIT License
 
-Copyright (c) 2026 Sidabari
+Copyright (c) 2026 cx8537
+
+Authorship note: All source code and documentation in this project were
+written by Claude Code (Anthropic). The human collaborator (cx8537) directed
+requirements, specifications, and review but did not author any code by hand.
+Copyright is held by cx8537 as the user who directed the tool to produce this
+work; Anthropic does not claim ownership of model outputs.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

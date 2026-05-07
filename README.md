@@ -9,6 +9,22 @@
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB?style=flat-square&logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-stable-000000?style=flat-square&logo=rust&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
+![Authored by Claude Code](https://img.shields.io/badge/Authored_by-Claude_Code-D97757?style=flat-square&logo=anthropic&logoColor=white)
+
+---
+
+## 저작 기록 (Authorship)
+
+> **이 프로젝트의 모든 코드와 문서는 [Claude Code](https://www.anthropic.com/claude-code)가 100% 작성·유지보수합니다.** 인간 협업자(`cx8537`)는 요구사항 정의·사양 결정·사용자 테스트·방향 검토를 담당했으며, **단 한 줄의 코드도 직접 손대지 않았습니다.**
+
+| 역할 | 담당 |
+|---|---|
+| 코드 작성 / 리팩토링 / 유지보수 | Claude Code (주로 Claude Opus 4.7 1M context, 일부 Sonnet) |
+| 모든 문서 (`README.md`, `SIDABARI_SPEC.md`, `CLAUDE.md`, `docs/**`) | Claude Code |
+| 사양 결정 · 요구사항 · UX 판단 · 검수 | cx8537 (인간) |
+| 라이선스/저작권 보유 | cx8537 (사용자가 도구를 통해 생성한 결과물의 권리) |
+
+매 세션 시작 시 [CLAUDE.md](CLAUDE.md)가 절대 원칙(추측 금지·자동 재시도 금지·보안 규칙 등)으로 적용되며, 새 기능 추가나 버그 수정도 모두 같은 규칙 아래 Claude Code가 수행합니다. 커밋 메시지에는 `Co-Authored-By: Claude` 트레일러로 일관 표기됩니다.
 
 ---
 
