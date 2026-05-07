@@ -4,6 +4,12 @@
 >
 > Claude Code로 코드를 작성하고 AWS EC2에 배포·진단·수정하는 반복 사이클을 한 화면에서 처리하기 위한 데스크톱 도구.
 
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Windows_11-0078D6?style=flat-square&logo=windows11&logoColor=white)
+![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB?style=flat-square&logo=tauri&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-stable-000000?style=flat-square&logo=rust&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
+
 ---
 
 ## 무엇을 해 주는가
@@ -44,11 +50,30 @@ Claude Code → 빌드 → SFTP 업로드 → `deploy.sh` → 로그 모니터�
 
 ## 기술 스택
 
-**앱 셸**: Tauri 2.x
+### 앱 셸
 
-**프론트엔드**: Vite, React 19, TypeScript, Tailwind v4, shadcn/ui, lucide-react, xterm.js v6, react-resizable-panels, react-rnd, Zustand, zod
+![Tauri](https://img.shields.io/badge/Tauri_2.x-24C8DB?style=for-the-badge&logo=tauri&logoColor=white)
 
-**백엔드 (Rust)**: tokio, portable-pty, russh / russh-keys / russh-sftp, serde, notify, rusqlite (bundled), ssh-key (ed25519)
+### 프론트엔드
+
+![Vite](https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white)
+![React](https://img.shields.io/badge/React_19-61DAFB?style=for-the-badge&logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_v4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)
+![shadcn/ui](https://img.shields.io/badge/shadcn%2Fui-000000?style=for-the-badge&logo=shadcnui&logoColor=white)
+![Zustand](https://img.shields.io/badge/Zustand-443E38?style=for-the-badge)
+![Zod](https://img.shields.io/badge/Zod-3068B7?style=for-the-badge&logo=zod&logoColor=white)
+![Lucide](https://img.shields.io/badge/Lucide_Icons-F56565?style=for-the-badge&logo=lucide&logoColor=white)
+
+추가 라이브러리: xterm.js v6, react-resizable-panels, react-rnd, @fontsource-variable/geist, @tauri-apps/api · plugin-clipboard-manager · plugin-dialog · plugin-notification · plugin-window-state.
+
+### 백엔드 (Rust)
+
+![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)
+![Tokio](https://img.shields.io/badge/Tokio-B22222?style=for-the-badge)
+![SQLite](https://img.shields.io/badge/SQLite_(rusqlite_bundled)-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
+
+추가 crate: portable-pty, russh · russh-keys · russh-sftp, serde · serde_json, notify, ssh-key (ed25519), rand_core, sha2, async-trait, uuid.
 
 ---
 
