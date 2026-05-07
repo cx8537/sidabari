@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 // 사양서 §3.6 / CLAUDE.md §1.3 — Claude Code 권한 deny 규칙 설치.
-// 메인 Claude 작업 디렉토리(예: D:\nullnull.co.kr)의 .claude/settings.local.json에
-// 위험 명령(rm/systemctl stop/scp 등) deny 규칙을 추가한다.
+// 메인 Claude 작업 디렉토리(설정의 claude_code_sessions.main.directory)의
+// .claude/settings.local.json에 위험 명령(rm/systemctl stop/scp 등) deny 규칙을 추가한다.
 // 기존 설정과 병합 — Claude Code가 이미 쓰던 다른 규칙을 보존.
 //
 // 보조 방어선: 핵심은 EC2 ForceCommand. 로컬 deny는 ssh가 아닌 다른 변형 시도(scp/sftp/curl 등)

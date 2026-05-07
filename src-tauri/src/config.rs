@@ -123,6 +123,12 @@ impl Default for DeployConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MonitoringConfig {
+    // 진단 대상 systemd 서비스 이름. 빈 문자열이면 [자료 일괄 수집] 비활성.
+    // 사용자가 설정 UI에서 입력. 진단 명령 템플릿/Dashboard 헤더/MainClaudePanel 프롬프트가 이 값을 참조.
+    pub service_name: String,
+    // 자료 일괄 수집 명령 오버라이드. 빈 문자열이면 lib/diagnostic.ts의 내장 JVM/Spring Boot 템플릿 사용.
+    // 비어있지 않으면 그대로 셸에 전달되며 `{service}` placeholder가 service_name으로 치환됨.
+    pub collect_command: String,
     pub log_command: String,
     pub error_pattern: String,
     pub context_lines_before: u32,
@@ -133,6 +139,8 @@ pub struct MonitoringConfig {
 impl Default for MonitoringConfig {
     fn default() -> Self {
         Self {
+            service_name: String::new(),
+            collect_command: String::new(),
             log_command: String::new(),
             error_pattern: r"\[ERROR\]".to_string(),
             context_lines_before: 30,
@@ -154,6 +162,24 @@ impl Default for SafetyConfig {
     }
 }
 
+// Phase 0 — UI 토글. 콘솔 verbose 미러링 등 사용자 환경 설정.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    pub verbose_hook_logs: bool,
+    /// Phase 4 — Bash 도구 호출 시 PreToolUse 게이트 모달 활성 (기본 off).
+    pub gate_dangerous_tools: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            verbose_hook_logs: false,
+            gate_dangerous_tools: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -166,6 +192,7 @@ pub struct Config {
     pub deploy: DeployConfig,
     pub monitoring: MonitoringConfig,
     pub safety: SafetyConfig,
+    pub ui: UiConfig,
 }
 
 impl Default for Config {
@@ -180,6 +207,7 @@ impl Default for Config {
             deploy: DeployConfig::default(),
             monitoring: MonitoringConfig::default(),
             safety: SafetyConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }

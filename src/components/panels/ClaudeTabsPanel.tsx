@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LayoutDashboard, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -7,6 +7,8 @@ import { PtyTerminal } from "@/components/terminal/PtyTerminal";
 import { AddClaudeTabModal } from "@/components/modals/AddClaudeTabModal";
 import { DiagnosticDashboard } from "@/components/dashboard/DiagnosticDashboard";
 import { loadConfig, saveConfig } from "@/lib/config";
+import { useAppStore } from "@/store/useAppStore";
+import { listenHookEvent } from "@/lib/hooks";
 
 // 사양서 §4.2 / §5.2 — 추가 Claude Code 탭들 + 진단 Dashboard 고정 탭.
 // 각 Claude 탭은 directory에서 `claude -c`로 실행. config.claude_code_sessions.additional에 저장 →
@@ -27,6 +29,52 @@ function basename(p: string): string {
   return last >= 0 ? p.slice(last + 1) : p;
 }
 
+// Phase 1 — 탭 라벨 옆에 thinking 상태일 때 작은 점 표시.
+// 탭 자체가 selector를 호출하므로 별도 컴포넌트로 분리해 리렌더 범위 좁힌다.
+function ClaudeTabButton({
+  tab,
+  active,
+  onSelect,
+  onRemove,
+}: {
+  tab: Tab;
+  active: boolean;
+  onSelect: () => void;
+  onRemove: () => void;
+}) {
+  const activity = useAppStore((s) => s.panelActivity[`claude-tab:${tab.id}`]);
+  const thinking = activity?.state === "thinking";
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "flex items-center gap-1 rounded-md px-2 py-1 text-xs",
+        active
+          ? "bg-secondary text-secondary-foreground ring-1 ring-ring ring-inset"
+          : "text-muted-foreground hover:bg-muted",
+      )}
+      title={tab.directory}
+    >
+      <span className="max-w-[12rem] truncate">{tab.label}</span>
+      {thinking && (
+        <span
+          aria-hidden="true"
+          className="size-1.5 rounded-full bg-action-green"
+          title="Claude 작업 중"
+        />
+      )}
+      <X
+        className="size-3 opacity-50 hover:opacity-100"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+      />
+    </button>
+  );
+}
+
 export function ClaudeTabsPanel() {
   const { isFocused, onMouseDown } = usePanelFocus("claude-tabs");
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -34,6 +82,11 @@ export function ClaudeTabsPanel() {
   const [activeId, setActiveId] = useState<string>(DASHBOARD_TAB_ID);
   const [addOpen, setAddOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // Phase 6b — config 자동로드 탭들은 직렬화. mountedCount 만큼 PtyTerminal 마운트.
+  // 첫 SessionStart 훅 도착 또는 5초 timeout 시 다음 탭 진전.
+  // 훅 미설치 시에도 timeout으로 자동 폴백 → 기존 spawnDelayMs 시차 효과 유지.
+  const [mountedCount, setMountedCount] = useState(0);
+  const tabsRef = useRef<Tab[]>([]);
 
   // 마운트 시 config의 additional 배열 로드 → 자동 spawn (사양서 §5.1)
   useEffect(() => {
@@ -48,6 +101,9 @@ export function ClaudeTabsPanel() {
           directory: entry.directory,
         }));
         setTabs(initial);
+        tabsRef.current = initial;
+        // 첫 탭만 즉시 mount, 나머지는 SessionStart/timeout으로 점진 진전.
+        setMountedCount(initial.length > 0 ? 1 : 0);
         // Dashboard 탭이 항상 존재 — Claude 탭이 있어도 기본은 Dashboard 유지.
         setLoaded(true);
       })
@@ -59,6 +115,39 @@ export function ClaudeTabsPanel() {
       cancelled = true;
     };
   }, []);
+
+  // Phase 6b — SessionStart 진전 + 5초 timeout 폴백.
+  useEffect(() => {
+    if (mountedCount === 0 || mountedCount >= tabs.length) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    const advance = () =>
+      setMountedCount((c) => Math.min(tabsRef.current.length, c + 1));
+
+    // 훅 미설치 등으로 SessionStart가 안 와도 자동 폴백.
+    const timer = window.setTimeout(advance, 5000);
+
+    listenHookEvent((e) => {
+      if (cancelled) return;
+      if (e.kind !== "session-start") return;
+      const p = e.payload._sidabari?.panel_id ?? "";
+      const expected = tabsRef.current[mountedCount - 1];
+      if (!expected) return;
+      if (p === `claude-tab:${expected.id}`) advance();
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch((err) => console.warn("[ClaudeTabsPanel] hook listen 실패:", err));
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      unlisten?.();
+    };
+  }, [mountedCount, tabs.length]);
 
   async function persistTabs(next: Tab[]) {
     try {
@@ -85,6 +174,9 @@ export function ClaudeTabsPanel() {
     };
     const next = [...tabs, newTab];
     setTabs(next);
+    tabsRef.current = next;
+    // 사용자가 명시적으로 추가한 탭은 즉시 mount (직렬화 대상은 자동 로드된 탭들만).
+    setMountedCount(next.length);
     setActiveId(newTab.id);
     await persistTabs(next);
   }
@@ -92,6 +184,8 @@ export function ClaudeTabsPanel() {
   async function handleRemove(id: string) {
     const next = tabs.filter((t) => t.id !== id);
     setTabs(next);
+    tabsRef.current = next;
+    setMountedCount((c) => Math.min(c, next.length));
     if (activeId === id) {
       // 닫힌 탭이 활성이었으면 남은 첫 Claude 탭, 그것도 없으면 Dashboard로.
       setActiveId(next[0]?.id ?? DASHBOARD_TAB_ID);
@@ -124,27 +218,13 @@ export function ClaudeTabsPanel() {
         </button>
 
         {tabs.map((tab) => (
-          <button
+          <ClaudeTabButton
             key={tab.id}
-            type="button"
-            onClick={() => setActiveId(tab.id)}
-            className={cn(
-              "flex items-center gap-1 rounded-md px-2 py-1 text-xs",
-              activeId === tab.id
-                ? "bg-secondary text-secondary-foreground ring-1 ring-ring ring-inset"
-                : "text-muted-foreground hover:bg-muted",
-            )}
-            title={tab.directory}
-          >
-            <span className="max-w-[12rem] truncate">{tab.label}</span>
-            <X
-              className="size-3 opacity-50 hover:opacity-100"
-              onClick={(e) => {
-                e.stopPropagation();
-                void handleRemove(tab.id);
-              }}
-            />
-          </button>
+            tab={tab}
+            active={activeId === tab.id}
+            onSelect={() => setActiveId(tab.id)}
+            onRemove={() => void handleRemove(tab.id)}
+          />
         ))}
         <Button
           size="icon-xs"
@@ -177,26 +257,36 @@ export function ClaudeTabsPanel() {
           )
         ) : (
           // 모든 Claude 탭 mount 유지 (활성만 보이게). PtyTerminal unmount = SSH/PTY 종료라 비활성에도 살아있어야.
-          // 재시작 시 메인 + 모든 탭이 한 frame에 동시 spawn되면 claude의 lock/credentials 충돌이
-          // 발생해 일부 인스턴스가 silent fail하는 경우 — 인덱스별 시차로 race 회피.
-          tabs.map((tab, idx) => (
-            <div
-              key={tab.id}
-              className={cn(
-                "absolute inset-0",
-                activeId === tab.id ? "visible" : "invisible pointer-events-none",
-              )}
-            >
-              <PtyTerminal
-                spawn={{
-                  command: "claude",
-                  args: ["-c"],
-                  cwd: tab.directory,
-                }}
-                spawnDelayMs={(idx + 1) * 1500}
-              />
-            </div>
-          ))
+          // Phase 6b — 자동 로드된 탭들은 SessionStart/5초 timeout으로 점진 mount (claude lock race 정공법).
+          // 사용자가 [+]로 추가한 탭은 handleAdd가 mountedCount를 즉시 끌어올려 곧바로 spawn.
+          tabs.map((tab, idx) => {
+            const mounted = idx < mountedCount;
+            return (
+              <div
+                key={tab.id}
+                className={cn(
+                  "absolute inset-0",
+                  activeId === tab.id ? "visible" : "invisible pointer-events-none",
+                )}
+              >
+                {mounted ? (
+                  <PtyTerminal
+                    spawn={{
+                      command: "claude",
+                      args: ["-c"],
+                      cwd: tab.directory,
+                      // Phase 0 — Claude 훅이 패널을 식별하도록 ENV 주입.
+                      env: { SIDABARI_PANEL_ID: `claude-tab:${tab.id}` },
+                    }}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                    이전 탭 시작 대기 중...
+                  </div>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
       <AddClaudeTabModal open={addOpen} onOpenChange={setAddOpen} onAdd={handleAdd} />

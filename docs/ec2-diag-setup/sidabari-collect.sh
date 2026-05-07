@@ -11,7 +11,18 @@
 
 set -uo pipefail
 
-SERVICE_NAME="${SIDABARI_SERVICE:-***REDACTED-SERVICE***}"
+# 환경변수 파일 source — install.sh가 /etc/default/sidabari-collect에 SIDABARI_SERVICE를 기록.
+# ForceCommand로 호출되면 sshd가 /etc/default/*를 자동 source하지 않으므로 여기서 명시적으로 처리.
+if [ -f /etc/default/sidabari-collect ]; then
+  # shellcheck disable=SC1091
+  . /etc/default/sidabari-collect
+fi
+
+SERVICE_NAME="${SIDABARI_SERVICE:-}"
+if [ -z "$SERVICE_NAME" ]; then
+  echo "[ERROR] SIDABARI_SERVICE 미설정 — /etc/default/sidabari-collect 확인" >&2
+  exit 1
+fi
 PID="$(systemctl show -p MainPID --value "$SERVICE_NAME" 2>/dev/null || echo "")"
 
 echo "===== 자료 일괄 수집 ($SERVICE_NAME) ====="

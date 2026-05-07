@@ -45,6 +45,11 @@ export const DeployConfigSchema = z.object({
 });
 
 export const MonitoringConfigSchema = z.object({
+  // 진단 대상 systemd 서비스 이름. 빈 값이면 [자료 일괄 수집] 비활성.
+  service_name: z.string().default(""),
+  // 자료 수집 명령 오버라이드. 빈 값이면 lib/diagnostic.ts의 내장 JVM/Spring Boot 템플릿 사용.
+  // {service} placeholder는 service_name으로 치환됨.
+  collect_command: z.string().default(""),
   log_command: z.string(),
   error_pattern: z.string(),
   context_lines_before: z.number().int().nonnegative(),
@@ -56,6 +61,17 @@ export const SafetyConfigSchema = z.object({
   ssh_disconnect_grace_seconds: z.number().int().nonnegative(),
 });
 
+// Phase 0/4 — UI 토글류. Rust 측 UiConfig와 1:1.
+// zod v4 — outer .default()는 inner default가 있어도 객체 모든 키를 명시해야 한다.
+export const UiConfigSchema = z
+  .object({
+    // 콘솔에 PreToolUse/PostToolUse 같은 시끄러운 훅 이벤트도 표시할지 (기본 off).
+    verbose_hook_logs: z.boolean().default(false),
+    // Phase 4 — Bash 도구 호출 시 PreToolUse 게이트 모달 활성 (기본 off).
+    gate_dangerous_tools: z.boolean().default(false),
+  })
+  .default({ verbose_hook_logs: false, gate_dangerous_tools: false });
+
 export const ConfigSchema = z.object({
   schema_version: z.number().int().positive(),
   display_name: z.string(),
@@ -66,6 +82,7 @@ export const ConfigSchema = z.object({
   deploy: DeployConfigSchema,
   monitoring: MonitoringConfigSchema,
   safety: SafetyConfigSchema,
+  ui: UiConfigSchema,
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

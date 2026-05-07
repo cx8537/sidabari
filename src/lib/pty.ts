@@ -12,6 +12,8 @@ export type SpawnOptions = {
   cwd?: string;
   rows?: number;
   cols?: number;
+  // Phase 0 — Claude Code 훅이 패널을 식별하도록 SIDABARI_PANEL_ID 등 ENV 주입용.
+  env?: Record<string, string>;
 };
 
 export type DataPayload = {

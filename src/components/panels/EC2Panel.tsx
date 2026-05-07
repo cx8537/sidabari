@@ -13,7 +13,7 @@ import { ptyWrite } from "@/lib/pty";
 import { listenSshData, sshWrite } from "@/lib/ssh";
 import { loadConfig } from "@/lib/config";
 import { stripAnsi } from "@/lib/ansi";
-import { COLLECT_COMMAND } from "@/lib/diagnostic";
+import { buildCollectCommand } from "@/lib/diagnostic";
 import {
   END_MARKER,
   extractCompletedSegment,
@@ -174,11 +174,29 @@ export function EC2Panel({ role }: Props) {
       addEvent("SYSTEM", `[${label}] 자료 일괄 수집 실패 — SSH 세션 비활성`);
       return;
     }
+    let cmd: string;
+    let svc: string;
     try {
-      await sshWrite(localSessionId, `${COLLECT_COMMAND}\n`);
+      const cfg = await loadConfig();
+      svc = cfg.monitoring.service_name.trim();
+      if (svc === "") {
+        addEvent(
+          "SYSTEM",
+          `[${label}] 자료 일괄 수집 실패 — 진단 서비스 이름 미설정 (설정 → 시스템 진단 탭).`,
+        );
+        return;
+      }
+      cmd = buildCollectCommand(svc, cfg.monitoring.collect_command);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addEvent("SYSTEM", `[${label}] 자료 일괄 수집 실패 — 설정 로드 오류: ${msg}`);
+      return;
+    }
+    try {
+      await sshWrite(localSessionId, `${cmd}\n`);
       addEvent(
         "USER",
-        `[${label}] 자료 일괄 수집 시작 (***REDACTED-SERVICE***) — 완료 후 [분석 요청] 클릭`,
+        `[${label}] 자료 일괄 수집 시작 (${svc}) — 완료 후 [분석 요청] 클릭`,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

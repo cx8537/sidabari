@@ -9,7 +9,8 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/store/useAppStore";
 import { sshWrite } from "@/lib/ssh";
-import { COLLECT_COMMAND } from "@/lib/diagnostic";
+import { buildCollectCommand } from "@/lib/diagnostic";
+import { loadConfig } from "@/lib/config";
 import type { DiagnosticMetrics } from "@/lib/parseDiagnostic";
 
 // 사양서 §3.3 [D3] — ***REDACTED-SERVICE*** 시스템 진단 대시보드.
@@ -227,12 +228,26 @@ export function DiagnosticDashboard() {
   const addEvent = useAppStore((s) => s.addEvent);
 
   const [refreshing, setRefreshing] = useState(false);
+  const [serviceName, setServiceName] = useState<string>("");
   // 마지막 갱신 시각의 상대 표시를 1초마다 다시 그림 — "방금" → "5초 전" 등.
   const [, force] = useState(0);
   useEffect(() => {
     if (!metrics) return;
     const t = setInterval(() => force((n) => n + 1), 1000);
     return () => clearInterval(t);
+  }, [metrics]);
+
+  // 헤더 표기용 서비스 이름 — 모달이 닫힌 직후에도 갱신되도록 metrics 변경마다 재로드.
+  useEffect(() => {
+    let cancelled = false;
+    loadConfig()
+      .then((c) => {
+        if (!cancelled) setServiceName(c.monitoring.service_name.trim());
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [metrics]);
 
   const cards = metrics ? buildCards(metrics) : MOCK_CARDS;
@@ -248,9 +263,26 @@ export function DiagnosticDashboard() {
       );
       return;
     }
+    let cmd: string;
+    try {
+      const cfg = await loadConfig();
+      const svc = cfg.monitoring.service_name.trim();
+      if (svc === "") {
+        addEvent(
+          "SYSTEM",
+          "[Dashboard] 새로고침 실패 — 진단 서비스 이름 미설정 (설정 → 시스템 진단 탭).",
+        );
+        return;
+      }
+      cmd = buildCollectCommand(svc, cfg.monitoring.collect_command);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addEvent("SYSTEM", `[Dashboard] 새로고침 실패 — 설정 로드 오류: ${msg}`);
+      return;
+    }
     setRefreshing(true);
     try {
-      await sshWrite(diagSessionId, `${COLLECT_COMMAND}\n`);
+      await sshWrite(diagSessionId, `${cmd}\n`);
       addEvent("USER", "[Dashboard] 자료 일괄 수집 시작 — 완료 시 자동 갱신");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -270,7 +302,8 @@ export function DiagnosticDashboard() {
             시스템 진단 대시보드
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            서비스: <span className="font-mono">***REDACTED-SERVICE***</span>
+            서비스:{" "}
+            <span className="font-mono">{serviceName || "(미설정)"}</span>
             {metrics && (
               <>
                 {" "}· PID:{" "}

@@ -22,11 +22,31 @@ export type ConsoleEvent = {
   message: string;
 };
 
+// Phase 1 — 패널별 Claude turn 활성 상태. key는 SIDABARI_PANEL_ID (예: "main-claude", "claude-tab:<uuid>").
+// SessionStart/Pre/PostToolUse → "thinking", Stop/SubagentStop → "idle".
+export type PanelActivityState = "thinking" | "idle";
+export type PanelActivity = {
+  state: PanelActivityState;
+  /** Date.now() — "thinking 시작" 또는 "idle 진입" 시각. */
+  since: number;
+};
+
+// Phase 3 — 진행 중 도구 가시화. PreToolUse 시 set, Stop 시 clear (PostToolUse는 다음 set까지 유지 — 깜박임 방지).
+export type PanelCurrentTool = {
+  /** 도구명 (Bash, Edit, Write 등) */
+  tool: string;
+  /** 사용자 가시 요약 (명령 일부, 파일 경로 등) */
+  detail: string;
+  since: number;
+};
+
 type AppState = {
   attemptStatus: AttemptStatus;
   attemptId: string | null;
   consoleEvents: ConsoleEvent[];
   focusedPanelId: PanelId | null;
+  panelActivity: Record<string, PanelActivity>;
+  panelCurrentTool: Record<string, PanelCurrentTool>;
   // 좌측 메인 Claude PTY의 현재 활성 sessionId (사양서 §3.6 — 분석 요청 텍스트 주입 대상).
   mainClaudeSessionId: string | null;
   // EC2 메인 SSH 활성 sessionId. 진단 패널이 mount되기 전 조건.
@@ -56,6 +76,9 @@ type AppState = {
   setActiveUploadId: (id: string | null) => void;
   setDiagPanelOpen: (open: boolean) => void;
   setLatestDiagnostic: (m: DiagnosticMetrics | null) => void;
+  setPanelActivity: (panelId: string, state: PanelActivityState) => void;
+  setPanelCurrentTool: (panelId: string, tool: string, detail: string) => void;
+  clearPanelCurrentTool: (panelId: string) => void;
 };
 
 function newEvent(source: string, message: string): ConsoleEvent {
@@ -79,6 +102,8 @@ export const useAppStore = create<AppState>((set) => ({
   activeUploadId: null,
   diagPanelOpen: false,
   latestDiagnostic: null,
+  panelActivity: {},
+  panelCurrentTool: {},
 
   addEvent: (source, message) =>
     set((state) => ({
@@ -136,4 +161,33 @@ export const useAppStore = create<AppState>((set) => ({
   setDiagPanelOpen: (open) => set({ diagPanelOpen: open }),
 
   setLatestDiagnostic: (latestDiagnostic) => set({ latestDiagnostic }),
+
+  setPanelActivity: (panelId, state) =>
+    set((prev) => {
+      const cur = prev.panelActivity[panelId];
+      // 같은 state 유지 시 since 갱신 X — 초 카운터가 흔들리지 않도록.
+      if (cur && cur.state === state) return prev;
+      return {
+        panelActivity: {
+          ...prev.panelActivity,
+          [panelId]: { state, since: Date.now() },
+        },
+      };
+    }),
+
+  setPanelCurrentTool: (panelId, tool, detail) =>
+    set((prev) => ({
+      panelCurrentTool: {
+        ...prev.panelCurrentTool,
+        [panelId]: { tool, detail, since: Date.now() },
+      },
+    })),
+
+  clearPanelCurrentTool: (panelId) =>
+    set((prev) => {
+      if (!prev.panelCurrentTool[panelId]) return prev;
+      const next = { ...prev.panelCurrentTool };
+      delete next[panelId];
+      return { panelCurrentTool: next };
+    }),
 }));

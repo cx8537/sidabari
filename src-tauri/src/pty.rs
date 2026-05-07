@@ -38,6 +38,9 @@ pub struct SpawnOptions {
     pub rows: Option<u16>,
     #[serde(default)]
     pub cols: Option<u16>,
+    // Phase 0 — 훅 식별을 위한 SIDABARI_PANEL_ID 등 ENV 주입용.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -115,6 +118,10 @@ pub fn pty_spawn(
     };
     if let Some(cwd) = &cwd_resolved {
         cmd.cwd(cwd);
+    }
+    // Phase 0 — 사용자 지정 ENV (SIDABARI_PANEL_ID 등) 주입.
+    for (k, v) in &opts.env {
+        cmd.env(k, v);
     }
 
     let child = pair

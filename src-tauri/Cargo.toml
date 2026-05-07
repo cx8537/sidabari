@@ -23,6 +23,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-window-state = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9"
@@ -33,4 +34,8 @@ russh-keys = "0.45"
 russh-sftp = "2"
 async-trait = "0.1"
 sha2 = "0.10"
+# Phase 0 — Claude Code 훅 IPC. events.jsonl tail + req-/resp- 파일 페어 watch.
+notify = "6"
+# Phase 5a — 훅 이벤트 영구 적재용 SQLite. bundled로 시스템 sqlite 의존성 회피.
+rusqlite = { version = "0.31", features = ["bundled"] }
 

@@ -49,13 +49,16 @@ ssh -i <기존_배포용_pem> ec2-user@<HOST>
 # 이제 EC2 안:
 cd /tmp/sidabari-diag-setup
 chmod +x install.sh sidabari-collect.sh
-./install.sh
+
+# SIDABARI_SERVICE 환경변수에 진단 대상 systemd 서비스 이름을 명시해야 함.
+# 예) Spring Boot 서비스가 myapp.service면 SIDABARI_SERVICE=myapp
+SIDABARI_SERVICE=<your-systemd-service-name> ./install.sh
 ```
 
 스크립트가 다음을 처리한다:
 
 1. `/usr/local/bin/sidabari-collect` 설치 (root 소유, 0755)
-2. `/etc/default/sidabari-collect`에 서비스명 기록 (`SIDABARI_SERVICE=***REDACTED-SERVICE***`)
+2. `/etc/default/sidabari-collect`에 서비스명 기록 (`SIDABARI_SERVICE=<your-systemd-service-name>`) — ForceCommand 호출 시 sidabari-collect가 source해서 사용
 3. `/etc/sudoers.d/sidabari-diag` — JVM 명령만 NOPASSWD 허용
 4. `sidabari-diag-users` 그룹 생성 + 현재 사용자 추가
 5. `~/.ssh/authorized_keys`에 ForceCommand 잠금으로 진단 공개키 등록
@@ -67,10 +70,10 @@ chmod +x install.sh sidabari-collect.sh
 로컬에서:
 
 ```bash
-# 다음 두 명령은 결과가 똑같아야 한다 (서버가 사용자 명령을 무시함을 확인):
+# 다음 세 명령은 결과가 똑같아야 한다 (서버가 사용자 명령을 무시함을 확인):
 ssh -i ~/.ssh/sidabari-diag ec2-user@<HOST> 'whoami'
 ssh -i ~/.ssh/sidabari-diag ec2-user@<HOST> 'rm -rf /'
-ssh -i ~/.ssh/sidabari-diag ec2-user@<HOST> 'sudo systemctl stop ***REDACTED-SERVICE***'
+ssh -i ~/.ssh/sidabari-diag ec2-user@<HOST> 'sudo systemctl stop <your-service>'
 ```
 
 세 명령 모두 진단 스크립트(`===== 자료 일괄 수집 ... =====`) 출력만 나오고 끊겨야 정상.

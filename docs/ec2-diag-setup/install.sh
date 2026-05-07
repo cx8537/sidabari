@@ -16,7 +16,16 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="${SIDABARI_SERVICE:-***REDACTED-SERVICE***}"
+
+# 사용자가 진단 대상 systemd 서비스 이름을 환경변수로 명시해야 함.
+# (이전에는 ***REDACTED-SERVICE*** 기본값이 있었으나 일반화 차원에서 제거 — 잘못된 서비스에 부착되는 사고 방지)
+if [ -z "${SIDABARI_SERVICE:-}" ]; then
+  echo "[ERROR] SIDABARI_SERVICE 환경변수가 필요합니다. 사용법:" >&2
+  echo "    SIDABARI_SERVICE=your-systemd-service-name ./install.sh" >&2
+  echo "  예) SIDABARI_SERVICE=myapp ./install.sh" >&2
+  exit 1
+fi
+SERVICE_NAME="$SIDABARI_SERVICE"
 
 # --- 1. 진단 전용 공개키 확인 ---
 PUB_KEY_FILE="$HERE/sidabari-diag.pub"
