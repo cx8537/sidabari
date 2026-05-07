@@ -13,6 +13,16 @@
 
 ---
 
+## 실 운용 사례
+
+이 도구는 현재 [**nullnull.co.kr**](https://nullnull.co.kr) — 온라인 강의 영상 판매 서비스 — 의 AWS EC2 백엔드 운영에 실제로 사용되고 있습니다. 빌드 → SFTP 업로드 → `deploy.sh` 재기동 → journalctl 로그 모니터링 → ERROR 발생 시 Claude 분석 요청까지의 일상 운영 루프를 Sidabari 한 화면에서 처리합니다. 데모/실험용이 아닌 **프로덕션 운영 도구**로 매일 사용 중입니다.
+
+![Sidabari 메인 화면](docs/images/main.jpg)
+
+> 한 화면에 메인 Claude Code · EC2 SSH · 시스템 진단 대시보드 · 도구 콘솔이 함께. 빌드·업로드·배포 자동화와 ERROR 감지 후 진단 루프까지 끊김 없이 진행. (위 스크린샷은 nullnull.co.kr LMS 백엔드 운영 중 캡처)
+
+---
+
 ## 저작 기록 (Authorship)
 
 > **이 프로젝트의 모든 코드와 문서는 [Claude Code](https://www.anthropic.com/claude-code)가 100% 작성·유지보수합니다.** 인간 협업자(`cx8537`)는 요구사항 정의·사양 결정·사용자 테스트·방향 검토를 담당했으며, **단 한 줄의 코드도 직접 손대지 않았습니다.**
@@ -187,6 +197,22 @@ Sidabari/
 - 설정 변경 후 [재시작] 또는 자동 재시작 토글로 모든 Claude PTY 일괄 재시작 (`.claude/settings.local.json` 즉시 반영).
 
 스키마 레퍼런스는 [SIDABARI_SPEC.md §5.2](SIDABARI_SPEC.md#52-설정-파일-스키마-참고), 코드는 `src-tauri/src/config.rs` / `src/lib/config.ts`.
+
+### 설정 모달 화면 (5개 탭)
+
+<table>
+  <tr>
+    <td align="center"><b>일반</b><br>앱 시작 시 claude 자동 실행, 훅 통합 설치, 호스트 IP 마스킹 등<br><img src="docs/images/Setting00.jpg" alt="일반 탭" /></td>
+    <td align="center"><b>서버 (SSH/SFTP)</b><br>EC2 host/user/개인키 경로 + SFTP 업로드 디렉토리<br><img src="docs/images/Setting01.jpg" alt="서버 탭" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>빌드/배포</b><br>빌드 명령·작업 디렉토리·jar 경로·타임아웃·배포 명령<br><img src="docs/images/Setting02.jpg" alt="빌드/배포 탭" /></td>
+    <td align="center"><b>모니터링</b><br>로그 모니터 명령·ERROR 정규식·컨텍스트 N줄·캡처 지연<br><img src="docs/images/Setting03.jpg" alt="모니터링 탭" /></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><b>시스템 진단</b><br>진단 전용 키 + 서버 측 ForceCommand 셋업, Claude Code 권한 정책 (자동 허용 등록 / 안전 규칙 deny 설치)<br><img src="docs/images/Setting04.jpg" alt="시스템 진단 탭" width="50%" /></td>
+  </tr>
+</table>
 
 ---
 
