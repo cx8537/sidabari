@@ -178,3 +178,37 @@ export async function listenSshExecDone(
     handler(e.payload);
   });
 }
+
+// Headless 자료 일괄 수집 — Dashboard 새로고침 전용. ssh_exec과 다르게
+// 라인 stream X, stdout 전체를 string으로 await 반환. 30초 hard timeout 내장.
+export type SshCollectExecOptions = {
+  host: string;
+  port?: number;
+  user: string;
+  private_key_path: string;
+  command: string;
+  timeout_secs?: number;
+  exec_id?: string;
+};
+
+export type SshCollectExecResult = {
+  exec_id: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  succeeded: boolean;
+  reason: string;
+  elapsed_ms: number;
+  killed: boolean;
+  timed_out: boolean;
+};
+
+export async function sshCollectExec(
+  opts: SshCollectExecOptions,
+): Promise<SshCollectExecResult> {
+  return await invoke<SshCollectExecResult>("ssh_collect_exec", { opts });
+}
+
+export async function sshCollectKill(execId: string): Promise<void> {
+  await invoke("ssh_collect_kill", { execId });
+}

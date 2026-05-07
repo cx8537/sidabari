@@ -17,6 +17,7 @@ import {
   listenSshExecLine,
   sftpUpload,
   sftpUploadKill,
+  sshCollectKill,
   sshExec,
   sshExecKill,
   sshWrite,
@@ -62,6 +63,7 @@ export function MainToolbar() {
   const mainEc2DiagSessionId = useAppStore((s) => s.mainEc2DiagSessionId);
   const activeDeployExecId = useAppStore((s) => s.activeDeployExecId);
   const activeUploadId = useAppStore((s) => s.activeUploadId);
+  const activeDiagExecId = useAppStore((s) => s.activeDiagExecId);
   const setActiveDeployExecId = useAppStore((s) => s.setActiveDeployExecId);
   const setActiveUploadId = useAppStore((s) => s.setActiveUploadId);
   const beginAttempt = useAppStore((s) => s.beginAttempt);
@@ -104,7 +106,7 @@ export function MainToolbar() {
     const remotePath = joinRemote(sftp.remote_upload_path, fileName);
 
     addEvent("UPLOAD", `$ sftp put ${localPath}`);
-    addEvent("UPLOAD", `   → ${e2.user}@${e2.host}:${remotePath}`);
+    addEvent("UPLOAD", `   → 원격: ${remotePath}`);
 
     // upload_id를 frontend에서 생성 → store에 등록 → backend kill 가능.
     const uploadId = crypto.randomUUID();
@@ -188,7 +190,7 @@ export function MainToolbar() {
       return;
     }
 
-    addEvent("DEPLOY", `$ ssh ${e2.user}@${e2.host} -- ${script}`);
+    addEvent("DEPLOY", `$ ssh EC2 -- ${script}`);
 
     return new Promise<void>((resolve) => {
       let unlistenLine: (() => void) | null = null;
@@ -294,7 +296,9 @@ export function MainToolbar() {
   }
 
   async function handleAbort() {
-    if (!isRunning) return;
+    // attempt가 진행 중이 아니어도 헤드리스 진단 수집은 별도로 죽일 수 있어야 함.
+    if (!isRunning && !activeDiagExecId) return;
+    // attempt 상태는 running일 때만 aborted로 전환 (idempotent — 그 외엔 no-op).
     abortAttempt();
     // 사양서 §3.7 — 진행 중 명령에 Ctrl+C 전송, SSH 채널은 유지.
     // 1) 빌드 (로컬 process)
@@ -332,11 +336,20 @@ export function MainToolbar() {
     if (mainEc2DiagSessionId) {
       sshWrite(mainEc2DiagSessionId, "\x03").catch(() => {});
     }
+    // 6) Dashboard 헤드리스 진단 수집 — SIGINT + close.
+    if (activeDiagExecId) {
+      try {
+        await sshCollectKill(activeDiagExecId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        addEvent("SYSTEM", `진단 수집 중단 IPC 실패: ${msg}`);
+      }
+    }
   }
 
   return (
     <header className="flex items-center gap-2 bg-card px-3 py-2">
-      <span className="mr-2 text-sm font-semibold text-accent-gold">또돌이</span>
+      <span className="mr-2 text-sm font-semibold text-accent-gold">Sidabari</span>
       <span className="text-xs text-[#E4E6EA]">
         상태: <span className={cn("font-medium", statusColor(status))}>{status}</span>
       </span>
@@ -353,9 +366,9 @@ export function MainToolbar() {
       <Button
         size="sm"
         onClick={handleAbort}
-        disabled={!isRunning}
+        disabled={!isRunning && !activeDiagExecId}
         className="[&_svg]:text-destructive"
-        title="진행 중 Attempt 강제 중단 (Ctrl+C 전송, SSH 채널 유지)"
+        title="진행 중 작업 강제 중단 (빌드/업로드/배포/Dashboard 진단 수집, SSH 채널 유지)"
       >
         <Square /> 강제 중단
       </Button>

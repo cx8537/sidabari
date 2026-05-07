@@ -8,7 +8,7 @@
 ## 0. 프로젝트 정체성
 
 - **프로젝트명**: Sidabari
-- **표시명 (사용자 대면)**: 또돌이
+- **표시명 (사용자 대면)**: Sidabari
 - **본질**: 본인용 개발 자동화 도구 (1인 사용)
 - **기술 스택**: Tauri 2.x + Vite + React + TypeScript + Rust
 - **상세 사양**: `SIDABARI_SPEC.md` 참조
@@ -260,7 +260,7 @@
 | `--ring` | `#35538F` | 활성 탭 ring, focus ring |
 | `--destructive` | oklch(0.704 0.191 22.216) | 에러/중단 (MONITOR 이벤트, 강제 중단 아이콘) |
 | `--border` | oklch(1 0 0 / 0.08) | 패널 외곽 (사용 최소) |
-| `--accent-gold` (custom) | `#B28B55` | 또돌이 브랜드, BUILD/UPLOAD/DEPLOY 콘솔 태그 |
+| `--accent-gold` (custom) | `#B28B55` | Sidabari 브랜드, BUILD/UPLOAD/DEPLOY 콘솔 태그 |
 | `--action-green` (custom) | `#508956` | 시작/실행 액션 아이콘 (시도 시작·분석 요청) |
 
 **신규 색 토큰 추가**:

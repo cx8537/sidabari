@@ -69,8 +69,17 @@ export const UiConfigSchema = z
     verbose_hook_logs: z.boolean().default(false),
     // Phase 4 — Bash 도구 호출 시 PreToolUse 게이트 모달 활성 (기본 off).
     gate_dangerous_tools: z.boolean().default(false),
+    // 설정 변경 후 모든 Claude PTY 자동 재시작 (기본 off, 옵트인).
+    auto_restart_claude_after_settings_change: z.boolean().default(false),
+    // EC2 SSH 패널 출력에서 host(IP) 문자열 마스킹 (기본 off, 캡처/공유 직전 옵트인).
+    mask_ec2_ips: z.boolean().default(false),
   })
-  .default({ verbose_hook_logs: false, gate_dangerous_tools: false });
+  .default({
+    verbose_hook_logs: false,
+    gate_dangerous_tools: false,
+    auto_restart_claude_after_settings_change: false,
+    mask_ec2_ips: false,
+  });
 
 export const ConfigSchema = z.object({
   schema_version: z.number().int().positive(),

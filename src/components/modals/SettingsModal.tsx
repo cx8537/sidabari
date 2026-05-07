@@ -28,6 +28,11 @@ import {
   installClaudeSafetyRules,
 } from "@/lib/claudeSafety";
 import { installClaudeHooks } from "@/lib/claudeHooks";
+import {
+  installDiagSshAllow,
+  removeDiagSshAllow,
+} from "@/lib/diagSshAllow";
+import { DiagSetupModal } from "@/components/modals/DiagSetupModal";
 import { useAppStore } from "@/store/useAppStore";
 import { cn } from "@/lib/utils";
 
@@ -58,7 +63,7 @@ const TABS: ReadonlyArray<{
 
 const DEFAULT_CONFIG: Config = ConfigSchema.parse({
   schema_version: 1,
-  display_name: "또돌이",
+  display_name: "Sidabari",
   project: { name: "" },
   claude_code_sessions: {
     main: { label: "", directory: "", auto_start: false },
@@ -91,7 +96,12 @@ const DEFAULT_CONFIG: Config = ConfigSchema.parse({
     context_capture_delay_seconds: 5,
   },
   safety: { ssh_disconnect_grace_seconds: 10 },
-  ui: { verbose_hook_logs: false, gate_dangerous_tools: false },
+  ui: {
+    verbose_hook_logs: false,
+    gate_dangerous_tools: false,
+    auto_restart_claude_after_settings_change: false,
+    mask_ec2_ips: false,
+  },
 });
 
 const INPUT_CLASS =
@@ -102,6 +112,8 @@ const TEXTAREA_CLASS =
 
 export function SettingsModal({ open, onOpenChange }: Props) {
   const addEvent = useAppStore((s) => s.addEvent);
+  const restartAllClaudes = useAppStore((s) => s.restartAllClaudes);
+  const setMaskEc2Ips = useAppStore((s) => s.setMaskEc2Ips);
   const [state, setState] = useState<LoadState>({ status: "idle" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -118,6 +130,14 @@ export function SettingsModal({ open, onOpenChange }: Props) {
   >(null);
   const [hookInstalling, setHookInstalling] = useState(false);
   const [hookMessage, setHookMessage] = useState<
+    | { kind: "ok"; text: string }
+    | { kind: "err"; text: string }
+    | { kind: "info"; text: string }
+    | null
+  >(null);
+  const [diagSetupOpen, setDiagSetupOpen] = useState(false);
+  const [diagAllowBusy, setDiagAllowBusy] = useState(false);
+  const [diagAllowMessage, setDiagAllowMessage] = useState<
     | { kind: "ok"; text: string }
     | { kind: "err"; text: string }
     | { kind: "info"; text: string }
@@ -258,6 +278,9 @@ export function SettingsModal({ open, onOpenChange }: Props) {
         "USER",
         `Claude 훅 설치 — ${reports.length}개 디렉토리 (이벤트 ${totalAdded}${gateNote})`,
       );
+      if (state.config.ui.auto_restart_claude_after_settings_change) {
+        restartAllClaudes();
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setHookMessage({ kind: "err", text: msg });
@@ -272,6 +295,8 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     setSaveError(null);
     try {
       await saveConfig(state.config);
+      // store에도 즉시 반영해 SshTerminal 등 구독자가 다음 chunk부터 적용.
+      setMaskEc2Ips(state.config.ui.mask_ec2_ips);
       addEvent("SYSTEM", "설정 저장 완료");
       onOpenChange(false);
     } catch (e) {
@@ -324,6 +349,92 @@ export function SettingsModal({ open, onOpenChange }: Props) {
     }
   }
 
+  async function handleInstallDiagAllow() {
+    if (state.status !== "ready") return;
+    const sessions = state.config.claude_code_sessions;
+    const dirs = [sessions.main.directory, ...sessions.additional.map((s) => s.directory)]
+      .map((d) => d.trim())
+      .filter((d) => d !== "");
+    const host = state.config.ec2.host.trim();
+    const user = state.config.ec2.user.trim();
+    if (dirs.length === 0) {
+      setDiagAllowMessage({
+        kind: "err",
+        text: "Claude 작업 디렉토리(메인/추가)를 먼저 설정하세요",
+      });
+      return;
+    }
+    if (host === "" || user === "") {
+      setDiagAllowMessage({
+        kind: "err",
+        text: "EC2 host / user를 먼저 설정하세요 ([서버] 탭)",
+      });
+      return;
+    }
+    setDiagAllowBusy(true);
+    setDiagAllowMessage(null);
+    try {
+      const reports = [];
+      for (const dir of dirs) {
+        reports.push(await installDiagSshAllow(dir, host, user));
+      }
+      const patternCount = reports[0]?.patterns.length ?? 0;
+      setDiagAllowMessage({
+        kind: "ok",
+        text: `${reports.length}개 디렉토리 등록 완료 — 패턴 ${patternCount}개 (인자 있음/없음 두 형태) + autoMode 자연어 entry`,
+      });
+      addEvent(
+        "USER",
+        `진단 SSH 자동 허용 등록 — ${reports.length}개 디렉토리`,
+      );
+      if (state.config.ui.auto_restart_claude_after_settings_change) {
+        restartAllClaudes();
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setDiagAllowMessage({ kind: "err", text: msg });
+    } finally {
+      setDiagAllowBusy(false);
+    }
+  }
+
+  async function handleRemoveDiagAllow() {
+    if (state.status !== "ready") return;
+    const sessions = state.config.claude_code_sessions;
+    const dirs = [sessions.main.directory, ...sessions.additional.map((s) => s.directory)]
+      .map((d) => d.trim())
+      .filter((d) => d !== "");
+    if (dirs.length === 0) {
+      setDiagAllowMessage({
+        kind: "err",
+        text: "Claude 작업 디렉토리(메인/추가)를 먼저 설정하세요",
+      });
+      return;
+    }
+    setDiagAllowBusy(true);
+    setDiagAllowMessage(null);
+    try {
+      const reports = [];
+      for (const dir of dirs) {
+        reports.push(await removeDiagSshAllow(dir));
+      }
+      const totalRemoved = reports.reduce((s, r) => s + r.removed_count, 0);
+      setDiagAllowMessage({
+        kind: "ok",
+        text: `${reports.length}개 디렉토리 처리 — ${totalRemoved}개 패턴 제거`,
+      });
+      addEvent("USER", `진단 SSH 자동 허용 제거 — ${reports.length}개 디렉토리`);
+      if (state.config.ui.auto_restart_claude_after_settings_change) {
+        restartAllClaudes();
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setDiagAllowMessage({ kind: "err", text: msg });
+    } finally {
+      setDiagAllowBusy(false);
+    }
+  }
+
   async function handleInstallSafetyRules() {
     if (state.status !== "ready") return;
     const dir = state.config.claude_code_sessions.main.directory.trim();
@@ -353,6 +464,9 @@ export function SettingsModal({ open, onOpenChange }: Props) {
         "USER",
         `Claude 안전 규칙 설치 — ${dir} (deny ${report.deny_count})`,
       );
+      if (state.config.ui.auto_restart_claude_after_settings_change) {
+        restartAllClaudes();
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setSafetyMessage({ kind: "err", text: msg });
@@ -490,6 +604,43 @@ export function SettingsModal({ open, onOpenChange }: Props) {
             />
             위험 도구(Bash) 호출 시 모달로 확인받기 ({" "}
             <span className="font-mono">설정 변경 후 [훅 설치] 다시 클릭 필요</span>)
+          </label>
+          <label className="inline-flex items-start gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={config.ui.auto_restart_claude_after_settings_change}
+              onChange={(e) =>
+                updateUi({
+                  auto_restart_claude_after_settings_change: e.target.checked,
+                })
+              }
+              disabled={!isReady}
+              className="mt-0.5 size-3.5 accent-accent-gold"
+            />
+            <span>
+              설정 변경 시 모든 Claude PTY 자동 재시작 ([훅 설치] / [진단 SSH 자동 허용 등록] / [안전 규칙 설치]).
+              <br />
+              <span className="text-destructive">
+                주의 — 진행 중인 Claude turn이 끊깁니다.
+              </span>
+            </span>
+          </label>
+          <label className="inline-flex items-start gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={config.ui.mask_ec2_ips}
+              onChange={(e) => updateUi({ mask_ec2_ips: e.target.checked })}
+              disabled={!isReady}
+              className="mt-0.5 size-3.5 accent-accent-gold"
+            />
+            <span>
+              EC2 SSH 패널 출력에서 호스트 IP 마스킹 (캡처/공유 직전에만 켜기 권장).
+              <br />
+              <span className="text-muted-foreground">
+                저장 직후 새 출력부터 적용 — 이미 화면에 표시된 텍스트는 영향 없음.
+                완전히 가리려면 EC2 패널에서 <span className="font-mono">clear</span> 입력.
+              </span>
+            </span>
           </label>
         </div>
         <div className="grid gap-1">
@@ -937,6 +1088,52 @@ export function SettingsModal({ open, onOpenChange }: Props) {
         </p>
 
         <div className="grid gap-1">
+          {(() => {
+            // 원클릭 진단 셋업 사전 조건 — DiagSetupModal.start()의 검증과 1:1 일치.
+            const missing: string[] = [];
+            if (config.ec2.host.trim() === "") missing.push("EC2 호스트 ([서버] 탭)");
+            if (config.ec2.user.trim() === "") missing.push("EC2 사용자 ([서버] 탭)");
+            if (config.ec2.private_key_path.trim() === "")
+              missing.push("개인키 경로 ([서버] 탭)");
+            if (config.monitoring.service_name.trim() === "")
+              missing.push("진단 대상 systemd 서비스 이름 (위 입력칸)");
+            const blocked = !isReady || missing.length > 0;
+            const tooltip =
+              missing.length > 0
+                ? `먼저 다음을 설정하세요: ${missing.join(", ")}`
+                : "진단 키페어 생성 + EC2에 ForceCommand 잠금 셋업까지 자동 처리";
+            return (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="default"
+                    onClick={() => setDiagSetupOpen(true)}
+                    disabled={blocked}
+                    title={tooltip}
+                    className="[&_svg]:text-action-green"
+                  >
+                    <Stethoscope />
+                    원클릭 진단 셋업
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  아래 진단 키 경로를 직접 셋업하지 않은 사용자를 위한 자동 도우미. 키페어 생성
+                  → EC2에 셋업 파일 업로드 → install.sh 실행 → 키 경로 자동 등록까지 한 번에.
+                  EC2 사용자가 sudo NOPASSWD여야 합니다.
+                </p>
+                {missing.length > 0 && isReady && (
+                  <p className="text-xs text-destructive">
+                    누락된 사전 설정: {missing.join(" · ")}
+                  </p>
+                )}
+              </>
+            );
+          })()}
+        </div>
+
+        <div className="grid gap-1">
           <label
             className="text-xs text-muted-foreground"
             htmlFor="diag-pem-path"
@@ -981,6 +1178,68 @@ export function SettingsModal({ open, onOpenChange }: Props) {
           </p>
         </div>
 
+        <div className="my-1 h-px bg-foreground/20" />
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-card-foreground">
+          <ShieldCheck className="size-3.5 text-action-green" />
+          진단 SSH 자동 허용 (Claude Code 권한 정책)
+        </div>
+        <p className="text-xs text-muted-foreground">
+          메인 Claude의 [시스템 데이터 수집]은 운영 서버 SSH라서 Claude Code가 매번 승인을 요구한다.
+          이 버튼은 두 게이트 모두에 등록한다 — host/user 정확 매칭 패턴을{" "}
+          <span className="font-mono">permissions.allow</span>에, 그리고 auto mode classifier가
+          이해할 수 있는 자연어 자기 설명을 <span className="font-mono">autoMode.allow</span>에.
+          <strong> ForceCommand 셋업이 완료된 호스트에서만 사용</strong>하세요
+          (셋업: <span className="font-mono">docs/ec2-diag-setup/README.md</span>).
+        </p>
+        <div className="grid gap-1">
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="default"
+              onClick={handleInstallDiagAllow}
+              disabled={
+                !isReady ||
+                diagAllowBusy ||
+                config.ec2.host.trim() === "" ||
+                config.ec2.user.trim() === ""
+              }
+              title={
+                config.ec2.host.trim() === "" || config.ec2.user.trim() === ""
+                  ? "[서버] 탭에서 host/user 먼저 설정"
+                  : "메인 + 추가 Claude의 settings.local.json에 호스트 바운드 ssh 패턴 등록"
+              }
+            >
+              <ShieldCheck />
+              {diagAllowBusy ? "처리 중..." : "진단 SSH 자동 허용 등록"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="default"
+              onClick={handleRemoveDiagAllow}
+              disabled={!isReady || diagAllowBusy}
+              title="등록된 진단 SSH 자동 허용 패턴 제거"
+            >
+              허용 규칙 제거
+            </Button>
+          </div>
+          {diagAllowMessage && (
+            <p
+              className={
+                diagAllowMessage.kind === "ok"
+                  ? "text-xs text-action-green"
+                  : diagAllowMessage.kind === "err"
+                    ? "text-xs text-destructive"
+                    : "text-xs text-muted-foreground"
+              }
+            >
+              {diagAllowMessage.text}
+            </p>
+          )}
+        </div>
+
+        <div className="my-1 h-px bg-foreground/20" />
         <div className="grid gap-1">
           <label className="text-xs text-muted-foreground">
             로컬 보조 방어선 — Claude Code 권한 deny 규칙
@@ -1041,6 +1300,12 @@ export function SettingsModal({ open, onOpenChange }: Props) {
   }
 
   return (
+    <>
+    <DiagSetupModal
+      open={diagSetupOpen}
+      onOpenChange={setDiagSetupOpen}
+      onComplete={(path) => updateEc2({ diag_private_key_path: path })}
+    />
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden sm:max-w-3xl">
         <DialogHeader>
@@ -1104,5 +1369,6 @@ export function SettingsModal({ open, onOpenChange }: Props) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    </>
   );
 }

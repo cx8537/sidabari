@@ -205,3 +205,174 @@ pub async fn ssh_exec_kill(
     }
     Ok(())
 }
+
+// ───────────────────────────────────────────────────────────
+// Headless 자료 일괄 수집 — Dashboard 새로고침 전용.
+//
+// ssh_exec과 차이:
+//  - 라인 stream 대신 stdout 전체를 한 string으로 수집해 await로 반환.
+//  - hard timeout(default 30s) — 헤드리스라 사용자가 진행 못 보니 무한 대기 방지.
+//  - kill 채널은 같은 ExecState 공유 — exec_id로 ssh_exec_kill 또는 ssh_collect_kill 둘 다 동작.
+// ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CollectExecOptions {
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    pub user: String,
+    pub private_key_path: String,
+    pub command: String,
+    /// 0 또는 미지정 시 30초. 클라이언트가 양수를 명시하면 그 값.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// 호출자(JS)가 사전에 발급한 exec_id. 강제 중단 통합을 위해 store에 미리 기록 후
+    /// command를 보낼 수 있도록. 미지정 시 서버에서 새로 생성.
+    #[serde(default)]
+    pub exec_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CollectExecResult {
+    pub exec_id: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub succeeded: bool,
+    pub reason: String,
+    pub elapsed_ms: u64,
+    pub killed: bool,
+    pub timed_out: bool,
+}
+
+#[tauri::command]
+pub async fn ssh_collect_exec(
+    app: AppHandle,
+    ssh_state: State<'_, Arc<SshState>>,
+    exec_state: State<'_, Arc<ExecState>>,
+    opts: CollectExecOptions,
+) -> Result<CollectExecResult, String> {
+    let exec_id = opts
+        .exec_id
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let ssh_arc = ssh_state.inner().clone();
+    let exec_arc = exec_state.inner().clone();
+    let timeout_dur = std::time::Duration::from_secs(
+        opts.timeout_secs.filter(|&n| n > 0).unwrap_or(30),
+    );
+
+    let start = std::time::Instant::now();
+
+    let handle = establish_handle(
+        &app,
+        &ssh_arc,
+        &opts.host,
+        opts.port,
+        &opts.user,
+        &opts.private_key_path,
+    )
+    .await?;
+
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("채널 열기 실패: {}", e))?;
+    channel
+        .exec(true, opts.command.as_bytes())
+        .await
+        .map_err(|e| format!("exec 요청 실패: {}", e))?;
+
+    // kill 채널 — ssh_collect_kill 또는 ssh_exec_kill 어느 쪽이든 같은 exec_id로 신호 가능.
+    let (kill_tx, mut kill_rx) = mpsc::channel::<()>(1);
+    exec_arc.runs.lock().await.insert(exec_id.clone(), kill_tx);
+
+    let mut stdout_buf: Vec<u8> = Vec::new();
+    let mut stderr_buf: Vec<u8> = Vec::new();
+    let mut exit_code: Option<i32> = None;
+    let mut killed = false;
+    let mut timed_out = false;
+
+    let timeout_sleep = tokio::time::sleep(timeout_dur);
+    tokio::pin!(timeout_sleep);
+
+    loop {
+        tokio::select! {
+            msg = channel.wait() => {
+                match msg {
+                    Some(ChannelMsg::Data { data }) => {
+                        stdout_buf.extend_from_slice(&data);
+                    }
+                    Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
+                        stderr_buf.extend_from_slice(&data);
+                    }
+                    Some(ChannelMsg::ExitStatus { exit_status }) => {
+                        exit_code = Some(exit_status as i32);
+                    }
+                    Some(ChannelMsg::Eof) => {}
+                    Some(ChannelMsg::Close) | None => break,
+                    Some(_) => {}
+                }
+            }
+            _ = kill_rx.recv() => {
+                killed = true;
+                let _ = channel.signal(russh::Sig::INT).await;
+                let _ = channel.eof().await;
+                let _ = channel.close().await;
+                break;
+            }
+            _ = &mut timeout_sleep => {
+                timed_out = true;
+                let _ = channel.signal(russh::Sig::INT).await;
+                let _ = channel.close().await;
+                break;
+            }
+        }
+    }
+
+    let _ = exec_arc.runs.lock().await.remove(&exec_id);
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "collect finished", "")
+        .await;
+
+    let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    let succeeded = !killed && !timed_out && exit_code == Some(0);
+    let reason = if killed {
+        "강제 중단 (SIGINT)".to_string()
+    } else if timed_out {
+        format!("타임아웃 ({}초 초과)", timeout_dur.as_secs())
+    } else {
+        match exit_code {
+            Some(c) => format!("exit code {}", c),
+            None => "no exit status".to_string(),
+        }
+    };
+
+    Ok(CollectExecResult {
+        exec_id,
+        stdout,
+        stderr,
+        exit_code,
+        succeeded,
+        reason,
+        elapsed_ms,
+        killed,
+        timed_out,
+    })
+}
+
+#[tauri::command]
+pub async fn ssh_collect_kill(
+    state: State<'_, Arc<ExecState>>,
+    exec_id: String,
+) -> Result<(), String> {
+    let runs = state.runs.lock().await;
+    if let Some(tx) = runs.get(&exec_id) {
+        let _ = tx.send(()).await;
+    }
+    Ok(())
+}

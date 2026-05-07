@@ -1,22 +1,30 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   Info,
   RefreshCw,
+  Timer,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/store/useAppStore";
-import { sshWrite } from "@/lib/ssh";
+import { sshCollectExec } from "@/lib/ssh";
 import { buildCollectCommand } from "@/lib/diagnostic";
 import { loadConfig } from "@/lib/config";
-import type { DiagnosticMetrics } from "@/lib/parseDiagnostic";
+import { stripAnsi } from "@/lib/ansi";
+import {
+  extractCompletedSegment,
+  parseDiagnosticOutput,
+  type DiagnosticMetrics,
+} from "@/lib/parseDiagnostic";
 
-// 사양서 §3.3 [D3] — ***REDACTED-SERVICE*** 시스템 진단 대시보드.
+// 사양서 §3.3 [D3] — 시스템 진단 대시보드.
 // 데이터 소스: useAppStore.latestDiagnostic
-//   - EC2 진단 패널이 SSH stream에서 "===== 일괄 수집 종료 =====" 마커 감지 시 파싱해 갱신.
-//   - 진단 패널이 닫혀있으면(SSH 세션 X) 새로고침 버튼이 panel을 열고 안내.
+//   - 두 갱신 경로:
+//     (1) [새로고침] 버튼 — 헤드리스 ssh_collect_exec(터미널 패널 mount 불필요).
+//     (2) EC2 진단 플로팅 패널의 [자료 일괄 수집] — 패널 SSH stream에서 종료 마커 감지.
+//   - 어느 쪽이든 결과를 parseDiagnosticOutput으로 파싱해 store에 반영.
 //
 // 임계값(정상/주의/위험)은 1차로 hardcode → 추후 설정 모달로 분리 예정.
 
@@ -223,12 +231,14 @@ function fmtRelative(ts: number): string {
 
 export function DiagnosticDashboard() {
   const metrics = useAppStore((s) => s.latestDiagnostic);
-  const diagSessionId = useAppStore((s) => s.mainEc2DiagSessionId);
-  const setDiagPanelOpen = useAppStore((s) => s.setDiagPanelOpen);
+  const setLatestDiagnostic = useAppStore((s) => s.setLatestDiagnostic);
+  const setActiveDiagExecId = useAppStore((s) => s.setActiveDiagExecId);
   const addEvent = useAppStore((s) => s.addEvent);
 
   const [refreshing, setRefreshing] = useState(false);
   const [serviceName, setServiceName] = useState<string>("");
+  // 1분 주기 자동갱신 토글. 컴포넌트 unmount 시 자동 해제. 영구 저장 X — 세션 한정.
+  const [autoRefresh, setAutoRefresh] = useState(false);
   // 마지막 갱신 시각의 상대 표시를 1초마다 다시 그림 — "방금" → "5초 전" 등.
   const [, force] = useState(0);
   useEffect(() => {
@@ -252,46 +262,143 @@ export function DiagnosticDashboard() {
 
   const cards = metrics ? buildCards(metrics) : MOCK_CARDS;
 
+  // 헤드리스 새로고침 — 진단 패널 mount 여부와 무관하게 백그라운드 SSH 채널로 일괄 수집 실행.
+  // 키 우선순위: ec2.diag_private_key_path 있으면 진단 키(서버 ForceCommand가 sidabari-collect만 실행) →
+  // 없으면 ec2.private_key_path(배포 키) + buildCollectCommand 클라이언트 명령.
+  // exec_id를 미리 발급해 store(activeDiagExecId)에 기록 — [강제 중단] 통합.
   async function handleRefresh() {
     if (refreshing) return;
-    if (!diagSessionId) {
-      // 진단 패널이 닫혀있음 — 열어주고 사용자에게 안내.
-      setDiagPanelOpen(true);
-      addEvent(
-        "SYSTEM",
-        "[Dashboard] EC2 진단 패널을 열었습니다 — 연결 후 다시 새로고침 클릭",
-      );
-      return;
-    }
-    let cmd: string;
+    setRefreshing(true);
+
+    let cfg;
     try {
-      const cfg = await loadConfig();
-      const svc = cfg.monitoring.service_name.trim();
-      if (svc === "") {
-        addEvent(
-          "SYSTEM",
-          "[Dashboard] 새로고침 실패 — 진단 서비스 이름 미설정 (설정 → 시스템 진단 탭).",
-        );
-        return;
-      }
-      cmd = buildCollectCommand(svc, cfg.monitoring.collect_command);
+      cfg = await loadConfig();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       addEvent("SYSTEM", `[Dashboard] 새로고침 실패 — 설정 로드 오류: ${msg}`);
+      setRefreshing(false);
       return;
     }
-    setRefreshing(true);
+    const ec2 = cfg.ec2;
+    const svc = cfg.monitoring.service_name.trim();
+    if (!ec2.host.trim() || !ec2.user.trim()) {
+      addEvent("SYSTEM", "[Dashboard] 새로고침 실패 — EC2 host/user 미설정");
+      setRefreshing(false);
+      return;
+    }
+    if (svc === "") {
+      addEvent(
+        "SYSTEM",
+        "[Dashboard] 새로고침 실패 — 진단 서비스 이름 미설정 (설정 → 시스템 진단 탭)",
+      );
+      setRefreshing(false);
+      return;
+    }
+    const diagKey = ec2.diag_private_key_path.trim();
+    const useDiagKey = diagKey !== "";
+    const keyPath = useDiagKey ? diagKey : ec2.private_key_path.trim();
+    if (keyPath === "") {
+      addEvent("SYSTEM", "[Dashboard] 새로고침 실패 — SSH 키 경로 미설정");
+      setRefreshing(false);
+      return;
+    }
+
+    let cmd: string;
     try {
-      await sshWrite(diagSessionId, `${cmd}\n`);
-      addEvent("USER", "[Dashboard] 자료 일괄 수집 시작 — 완료 시 자동 갱신");
+      // 진단 키 + ForceCommand: 서버가 SSH_ORIGINAL_COMMAND를 무시하고 sidabari-collect만 실행 →
+      // command 텍스트는 사실상 무관. 의미 있는 문자열만 보내 server log 가독성 확보.
+      cmd = useDiagKey
+        ? "sidabari-collect"
+        : buildCollectCommand(svc, cfg.monitoring.collect_command);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      addEvent("SYSTEM", `[Dashboard] 새로고침 실패: ${msg}`);
+      addEvent("SYSTEM", `[Dashboard] 새로고침 실패 — 명령 생성 오류: ${msg}`);
+      setRefreshing(false);
+      return;
+    }
+
+    const execId = crypto.randomUUID();
+    setActiveDiagExecId(execId);
+    addEvent(
+      "USER",
+      `[Dashboard] 백그라운드 자료 수집 시작 (${useDiagKey ? "진단 키" : "배포 키"})`,
+    );
+
+    try {
+      const result = await sshCollectExec({
+        host: ec2.host,
+        port: ec2.port,
+        user: ec2.user,
+        private_key_path: keyPath,
+        command: cmd,
+        timeout_secs: 30,
+        exec_id: execId,
+      });
+
+      if (result.killed) {
+        addEvent("SYSTEM", "[Dashboard] 백그라운드 자료 수집 강제 중단됨");
+        return;
+      }
+      if (result.timed_out) {
+        addEvent(
+          "SYSTEM",
+          `[Dashboard] 백그라운드 자료 수집 타임아웃 (${(result.elapsed_ms / 1000).toFixed(1)}s) — 부분 출력으로 파싱 시도`,
+        );
+      } else if (!result.succeeded) {
+        const stderrTail = result.stderr.trim().slice(-200);
+        addEvent(
+          "SYSTEM",
+          `[Dashboard] 자료 수집 비정상 종료 — ${result.reason}${stderrTail ? `, stderr: ${stderrTail}` : ""}`,
+        );
+        // 부분 출력이 있으면 그래도 파싱 시도.
+      }
+
+      const cleaned = stripAnsi(result.stdout);
+      const segment = extractCompletedSegment(cleaned);
+      if (!segment) {
+        addEvent(
+          "SYSTEM",
+          `[Dashboard] 종료 마커 미감지 — 갱신 보류 (수집 ${(result.stdout.length / 1024).toFixed(1)} KB, ${result.elapsed_ms} ms)`,
+        );
+        return;
+      }
+      try {
+        const m = parseDiagnosticOutput(segment);
+        setLatestDiagnostic(m);
+        addEvent(
+          "SYSTEM",
+          `[Dashboard] 자료 수집 완료 — Dashboard 갱신 (${(result.stdout.length / 1024).toFixed(1)} KB, ${result.elapsed_ms} ms)`,
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        addEvent("SYSTEM", `[Dashboard] 진단 파싱 실패: ${msg}`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addEvent("SYSTEM", `[Dashboard] 백그라운드 자료 수집 실패: ${msg}`);
     } finally {
-      // 완료 감지는 별도 listener — 버튼은 sshWrite 보낸 직후 unlock.
-      setTimeout(() => setRefreshing(false), 500);
+      setActiveDiagExecId(null);
+      setRefreshing(false);
     }
   }
+
+  // 자동갱신 — 1분마다 handleRefresh 호출. ref로 최신 클로저 참조해 deps에 handleRefresh 안 넣음.
+  // 토글 ON/OFF만 effect를 재구성. 진행 중(refreshing)이면 다음 tick에서 자동 skip.
+  const handleRefreshRef = useRef(handleRefresh);
+  handleRefreshRef.current = handleRefresh;
+  useEffect(() => {
+    if (!autoRefresh) return;
+    addEvent("SYSTEM", "[Dashboard] 1분 자동갱신 ON");
+    const t = setInterval(() => {
+      void handleRefreshRef.current();
+    }, 60_000);
+    return () => {
+      clearInterval(t);
+      addEvent("SYSTEM", "[Dashboard] 1분 자동갱신 OFF");
+    };
+    // addEvent는 zustand action으로 stable 참조 — deps 흔들지 않음.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh]);
 
   return (
     <div className="flex h-full flex-col bg-background overflow-hidden">
@@ -316,25 +423,43 @@ export function DiagnosticDashboard() {
             )}
             {!metrics && (
               <>
-                {" "}· 데이터 없음 (새로고침 또는 EC2 진단 패널의 [자료 일괄 수집])
+                {" "}· 데이터 없음 ([새로고침] 클릭)
               </>
             )}
           </p>
         </div>
-        <Button
-          size="xs"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="[&_svg]:text-action-green"
-          title={
-            diagSessionId
-              ? "EC2 진단 SSH 세션에 자료 일괄 수집 명령 전송 (완료 시 자동 갱신)"
-              : "EC2 진단 패널을 열고 다시 클릭하세요"
-          }
-        >
-          <RefreshCw className={refreshing ? "animate-spin" : ""} />
-          {refreshing ? "수집 중..." : "새로고침"}
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="xs"
+            variant={autoRefresh ? "default" : "ghost"}
+            onClick={() => setAutoRefresh((v) => !v)}
+            className={cn(
+              "transition-colors",
+              autoRefresh
+                ? "[&_svg]:text-action-green ring-1 ring-ring ring-inset"
+                : "[&_svg]:text-muted-foreground",
+            )}
+            title={
+              autoRefresh
+                ? "자동갱신 ON — 1분마다 자료 일괄 수집 (다시 클릭하여 OFF)"
+                : "자동갱신 OFF — 클릭 시 1분 주기로 자동 수집"
+            }
+            aria-pressed={autoRefresh}
+          >
+            <Timer />
+            {autoRefresh ? "1분 자동갱신 ON" : "1분 자동갱신 OFF"}
+          </Button>
+          <Button
+            size="xs"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="[&_svg]:text-action-green"
+            title="백그라운드 SSH 채널로 자료 일괄 수집 후 자동 갱신 (30초 hard timeout, [강제 중단]으로 취소 가능)"
+          >
+            <RefreshCw className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "수집 중..." : "새로고침"}
+          </Button>
+        </div>
       </div>
 
       {/* 카드 그리드 */}
@@ -381,9 +506,9 @@ export function DiagnosticDashboard() {
             <div className="mb-1 flex items-center gap-1.5 font-semibold text-amber-400">
               <Info className="size-3.5" /> 데이터 없음
             </div>
-            아직 수집된 진단 자료가 없습니다. EC2 진단 패널을 열고{" "}
-            <span className="font-mono">[자료 일괄 수집]</span> 을 실행하거나
-            위 [새로고침] 버튼을 누르세요. 완료 시 카드들이 자동 갱신됩니다.
+            아직 수집된 진단 자료가 없습니다. 위{" "}
+            <span className="font-mono">[새로고침]</span> 버튼을 누르면 백그라운드
+            SSH 채널로 자료를 일괄 수집하고 카드를 자동 갱신합니다.
           </div>
         )}
       </div>

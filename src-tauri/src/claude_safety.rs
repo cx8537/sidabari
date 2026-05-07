@@ -98,10 +98,13 @@ fn deny_patterns() -> Vec<&'static str> {
         "Bash(*base64 -d* | bash*)",
         "Bash(*base64 -d* | sh*)",
         "Bash(*base64 --decode* | bash*)",
-        // 우리 도구 자신 변조 차단
-        "Bash(*sidabari*)",
+        // .claude/settings 자체 변조 차단 (Sidabari가 관리)
         "Edit(**/.claude/settings*)",
         "Write(**/.claude/settings*)",
+        // NOTE: 이전 버전에 `Bash(*sidabari*)`가 있었음 — 너무 broad해 진단 SSH 명령
+        // (키 경로에 sidabari-diag 포함)까지 차단해 [시스템 데이터 수집] 자체를 막았음.
+        // 핵심 방어선은 EC2 ForceCommand 잠금이라 이 보조선 한 줄 빠져도 위험 미미.
+        // [안전 규칙 설치]를 다시 클릭하면 self-cleanup으로 기존 라인이 자동 제거된다.
     ]
 }
 
@@ -132,7 +135,9 @@ fn validate_dir(directory: &str) -> Result<PathBuf, String> {
 }
 
 fn merge_deny(existing: &mut Map<String, Value>, new_patterns: &[&str]) -> usize {
-    // permissions.deny가 배열이면 patterns를 union으로 추가, 아니면 새로 만듬.
+    // self-cleanup 패턴 — marker.installed_patterns에 이전에 설치한 패턴 목록을 보관해
+    // [안전 규칙 설치] 재클릭 시 기존 _sidabari deny를 모두 제거 후 새 셋으로 갱신.
+    // 이렇게 하면 deny 패턴이 코드에서 변경되어도 사용자가 한 번 더 클릭하면 동기화된다.
     let permissions = existing
         .entry("permissions".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
@@ -145,10 +150,21 @@ fn merge_deny(existing: &mut Map<String, Value>, new_patterns: &[&str]) -> usize
         }
     };
 
+    // 이전 marker의 installed_patterns 회수.
+    let prev_installed: Vec<String> = perm_obj
+        .get(RULES_MARKER_KEY)
+        .and_then(|m| m.get("installed_patterns"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let deny_arr = perm_obj
         .entry("deny".to_string())
         .or_insert_with(|| Value::Array(Vec::new()));
-
     let arr = match deny_arr {
         Value::Array(a) => a,
         _ => {
@@ -157,11 +173,33 @@ fn merge_deny(existing: &mut Map<String, Value>, new_patterns: &[&str]) -> usize
         }
     };
 
+    // 1) 이전 _sidabari 패턴 제거.
+    if !prev_installed.is_empty() {
+        arr.retain(|v| {
+            v.as_str()
+                .map(|s| !prev_installed.iter().any(|p| p == s))
+                .unwrap_or(true)
+        });
+    }
+
+    // 1b) 마이그레이션 — version 1 marker에서 넘어온 사용자는 marker.installed_patterns가 없어
+    //     이전 코드가 등록했던 패턴을 식별 못 한다. 그래서 코드 변경으로 사라진 legacy 패턴은
+    //     명시적으로 매 install 마다 제거 시도 (이미 없으면 무동작).
+    //
+    //     `Bash(*sidabari*)`: 진단 SSH 명령(키 경로의 sidabari-diag 단어)에 매칭되어 [시스템
+    //     데이터 수집]을 차단하는 부작용 때문에 제거. 보호 가치 < 부작용.
+    const LEGACY_REMOVED: &[&str] = &["Bash(*sidabari*)"];
+    arr.retain(|v| {
+        v.as_str()
+            .map(|s| !LEGACY_REMOVED.contains(&s))
+            .unwrap_or(true)
+    });
+
+    // 2) 새 패턴 추가 (이미 사용자가 별도로 같은 deny를 갖고 있으면 중복 방지).
     let mut existing_set: std::collections::HashSet<String> = arr
         .iter()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
-
     let mut added = 0;
     for pat in new_patterns {
         if existing_set.insert(pat.to_string()) {
@@ -170,12 +208,17 @@ fn merge_deny(existing: &mut Map<String, Value>, new_patterns: &[&str]) -> usize
         }
     }
 
-    // 마커 — 우리가 관리하는 규칙임을 표시 (향후 갱신/제거 시 식별용)
+    // 3) marker 갱신 — installed_patterns에 우리가 설치한 셋 보관.
+    let installed_list: Vec<Value> = new_patterns
+        .iter()
+        .map(|p| Value::String((*p).to_string()))
+        .collect();
     perm_obj.insert(
         RULES_MARKER_KEY.to_string(),
         json!({
-            "version": 1,
+            "version": 2,
             "note": "Sidabari 자동 설치. docs/ec2-diag-setup/README.md 참조.",
+            "installed_patterns": installed_list,
         }),
     );
 

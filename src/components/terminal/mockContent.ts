@@ -2,7 +2,7 @@
 // ANSI 색: \x1b[33m yellow, \x1b[32m green, \x1b[36m cyan, \x1b[31m red, \x1b[0m reset
 
 export const MAIN_CLAUDE_LINES: string[] = [
-  "\x1b[33m또돌이 — 메인 Claude Code (Mock)\x1b[0m",
+  "\x1b[33mSidabari — 메인 Claude Code (Mock)\x1b[0m",
   "Claude Code 인스턴스가 실행되면 여기에 표시됩니다.",
   "EC2 패널의 \x1b[36m'분석 요청'\x1b[0m 클릭 시 컨텍스트 텍스트가 이 입력창에 주입됩니다.",
   "",
@@ -13,7 +13,7 @@ export const MAIN_CLAUDE_LINES: string[] = [
 
 export const CLAUDE_TAB_LINES: Record<string, string[]> = {
   "1": [
-    "\x1b[33m또돌이 — 추가 Claude Code 탭 1 (Mock)\x1b[0m",
+    "\x1b[33mSidabari — 추가 Claude Code 탭 1 (Mock)\x1b[0m",
     "디렉토리: \x1b[36m/Users/me/projects/myapp-frontend\x1b[0m",
     "",
     "$ claude -c",
@@ -21,7 +21,7 @@ export const CLAUDE_TAB_LINES: Record<string, string[]> = {
     "$ ",
   ],
   "2": [
-    "\x1b[33m또돌이 — 추가 Claude Code 탭 2 (Mock)\x1b[0m",
+    "\x1b[33mSidabari — 추가 Claude Code 탭 2 (Mock)\x1b[0m",
     "디렉토리: \x1b[36m/Users/me/projects/myapp-backend\x1b[0m",
     "",
     "$ claude -c",

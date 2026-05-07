@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "또돌이",
+  "productName": "Sidabari",
   "version": "0.1.0",
   "identifier": "kr.co.nullnull.sidabari",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "또돌이",
+        "title": "Sidabari",
         "width": 800,
         "height": 600
       }

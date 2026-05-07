@@ -169,6 +169,14 @@ pub struct UiConfig {
     pub verbose_hook_logs: bool,
     /// Phase 4 — Bash 도구 호출 시 PreToolUse 게이트 모달 활성 (기본 off).
     pub gate_dangerous_tools: bool,
+    /// 설정 변경([훅 설치]/[진단 SSH 자동 허용 등록]/[안전 규칙 설치]) 후 모든 Claude PTY를
+    /// 자동 재시작해 새 settings.local.json을 즉시 반영 (기본 off, 사용자 명시 옵트인).
+    /// CLAUDE.md §1.3 "자동 재시도 금지"는 실패 시 자동 retry — 사용자 액션 후 명시 동의에 의한
+    /// 재시작은 별개로 본다.
+    pub auto_restart_claude_after_settings_change: bool,
+    /// EC2 SSH 패널의 출력에서 ec2.host 문자열을 마스킹 (기본 off).
+    /// 캡처/공유 직전에만 켜는 용도 — 평소 OFF 유지 권장 (운영 가시성 감소).
+    pub mask_ec2_ips: bool,
 }
 
 impl Default for UiConfig {
@@ -176,6 +184,8 @@ impl Default for UiConfig {
         Self {
             verbose_hook_logs: false,
             gate_dangerous_tools: false,
+            auto_restart_claude_after_settings_change: false,
+            mask_ec2_ips: false,
         }
     }
 }
@@ -199,7 +209,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             schema_version: 1,
-            display_name: "또돌이".to_string(),
+            display_name: "Sidabari".to_string(),
             project: Project::default(),
             claude_code_sessions: ClaudeCodeSessions::default(),
             ec2: Ec2Config::default(),

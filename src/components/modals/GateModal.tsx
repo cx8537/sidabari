@@ -35,7 +35,7 @@ export function GateModal() {
       setRequest((prev) => {
         if (prev) {
           // 이전 요청은 자동 deny — gate.js timeout(30초)을 기다리는 대신 즉시 응답해 사용자 흐름 풀어줌.
-          gateRespond(prev.request_id, "deny", "또돌이: 새 요청으로 자동 거부").catch(() => {});
+          gateRespond(prev.request_id, "deny", "Sidabari: 새 요청으로 자동 거부").catch(() => {});
           addEvent("HOOK", `gate: 이전 요청 자동 거부 (panel=${prev.panel_id ?? "?"})`);
         }
         return req;

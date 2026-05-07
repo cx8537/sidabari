@@ -28,11 +28,14 @@ export function buildCollectCommand(
     return override.replace(/\{service\}/g, svc);
   }
 
+  // sidabari-collect.sh와 항목 셋 동일하게 유지 (Task #48). 변경 시 양쪽 동기화 필수.
   return [
     "clear",
     `PID=$(systemctl show -p MainPID --value ${svc} 2>/dev/null)`,
     `echo "===== 자료 일괄 수집 (${svc}) ====="`,
     'echo "MainPID=$PID"',
+    'echo "Host=$(hostname)"',
+    'echo "Date=$(date -Is)"',
     'echo ""',
     'echo "--- uptime ---"',
     "uptime",
@@ -43,7 +46,7 @@ export function buildCollectCommand(
     'echo "--- free -m ---"',
     "free -m",
     'echo ""',
-    // swap 설정 — free/vmstat은 사용량/IO만, 설정(영속/우선순위/swappiness)은 별도로 봐야 함.
+    // swap 설정 — free/vmstat은 사용량/IO만, 설정(영속/우선순위/swappiness)은 별도.
     'echo "--- swap 설정 ---"',
     "swapon --show 2>&1 || echo \"(swap 활성 X)\"",
     '(grep -iE "swap" /etc/fstab 2>/dev/null || echo "(fstab swap 항목 없음)")',
@@ -61,7 +64,11 @@ export function buildCollectCommand(
     'echo "--- journalctl 5min ---"',
     `sudo journalctl -u ${svc} --since "5 minutes ago" --no-pager | tail -100`,
     'echo ""',
-    // 24시간 누적 ERROR/Exception — 반복 패턴 식별에 유리. count + 마지막 50줄.
+    // 1시간 ERROR 패턴 — 5분 tail보다 넓은 윈도우, 마지막 50줄.
+    'echo "--- journalctl 1h ERROR/Exception/Caused by ---"',
+    `sudo journalctl -u ${svc} --since "1 hour ago" --no-pager 2>&1 | grep -iE "ERROR|Exception|Caused by" | tail -50 || echo "(1시간 내 ERROR 없음)"`,
+    'echo ""',
+    // 24시간 누적 — 반복 패턴 식별. count + 마지막 50줄.
     'echo "--- journalctl 24h ERROR/Exception 누적 ---"',
     `sudo journalctl -u ${svc} --since "24 hours ago" --no-pager 2>/dev/null | grep -cE "ERROR|Exception" | xargs -I{} echo "24h ERROR/Exception 누적: {} 건"`,
     `sudo journalctl -u ${svc} --since "24 hours ago" --no-pager 2>/dev/null | grep -E "ERROR|Exception" | tail -50`,
@@ -72,10 +79,15 @@ export function buildCollectCommand(
     'echo "--- actuator/health ---"',
     '(curl -sf http://localhost:8080/actuator/health 2>&1 || echo "actuator unreachable")',
     'echo ""',
+    // DB 커넥션 풀 활성 연결 수. metrics endpoint이 expose 안 되어 있으면 disabled 폴백.
+    'echo "--- actuator/metrics/hikaricp.connections.active ---"',
+    '(curl -sf http://localhost:8080/actuator/metrics/hikaricp.connections.active 2>&1 || echo "actuator metrics endpoint disabled or unreachable")',
+    'echo ""',
     // systemd PrivateTmp=true 환경에서 외부 jstack은 java의 attach socket(/tmp/.java_pid$PID)에 접근 못 함.
     // nsenter -t $PID -m으로 java 프로세스의 mount namespace에 진입해 같은 /tmp 보이게 함.
     // jmap -heap은 JDK 9+에서 deprecated → jcmd GC.heap_info / GC.class_histogram로 대체.
-    'if [ -n "$PID" ]; then echo "--- jstack ---"; sudo nsenter -t $PID -m -- jstack $PID 2>&1 | head -120; echo ""; echo "--- jcmd GC.heap_info ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.heap_info 2>&1 | head -40; echo ""; echo "--- jcmd GC.class_histogram (top 30) ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.class_histogram 2>&1 | head -35; echo ""; echo "--- jstat -gc ---"; sudo jstat -gc $PID 1000 3; else echo "[알림] MainPID 없음 — JVM 명령 생략"; fi',
+    // jstat -gc(절대값 KB) + jstat -gcutil(% 추세) 둘 다 — heap pressure 가시화.
+    'if [ -n "$PID" ]; then echo "--- jstack ---"; sudo nsenter -t $PID -m -- jstack $PID 2>&1 | head -120; echo ""; echo "--- jcmd GC.heap_info ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.heap_info 2>&1 | head -40; echo ""; echo "--- jcmd GC.class_histogram (top 30) ---"; sudo nsenter -t $PID -m -- jcmd $PID GC.class_histogram 2>&1 | head -35; echo ""; echo "--- jstat -gc ---"; sudo jstat -gc $PID 1000 3; echo ""; echo "--- jstat -gcutil 1s × 5 (GC 추세) ---"; sudo jstat -gcutil $PID 1000 5; else echo "[알림] MainPID 없음 — JVM 명령 생략"; fi',
     `echo "${COLLECT_END_MARKER}"`,
   ].join("; ");
 }

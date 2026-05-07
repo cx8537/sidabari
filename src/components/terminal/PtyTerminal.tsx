@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import "@xterm/xterm/css/xterm.css";
 import { TERMINAL_THEME } from "./Terminal";
 import { Button } from "@/components/ui/button";
@@ -25,11 +25,19 @@ type Props = {
   // 최초 spawn 시 지연 (ms). 여러 PtyTerminal이 한 frame에 mount될 때 시차를 주어
   // claude CLI의 lock 파일/credentials race를 회피한다 (재시작 시 메인+추가 탭 동시 spawn 케이스).
   spawnDelayMs?: number;
+  // xterm scrollback 줄 수. 미지정 시 10000 (cmd.exe `cls` 등 일반 셸 사용 가정).
+  // Claude Code 같은 alt-screen 미사용 Ink TUI는 partial redraw로 viewport 초과분이
+  // scrollback에 자연스럽게 누적돼 시작 직후부터 scrollbar가 보이는 부작용이 있다.
+  // 그런 패널엔 0을 넘겨 scrollback을 비활성화한다 (사용자가 옛 frame을 위로 스크롤해 볼 수 없게 됨).
+  scrollback?: number;
 };
 
 type Status = "starting" | "running" | "exited-fallback" | "stopped" | "error";
 
 // Ctrl+C: 선택 영역 있으면 클립보드 복사(차단), 없으면 \x03 → PTY (사양서 §3.7).
+// Ctrl+V: 클립보드 → term.paste()로 paste 경로(브래킷 페이스트 모드 존중) 발화.
+//   xterm 기본은 Ctrl+V를 raw \x16(SYN)으로 PTY에 보냄 — paste가 아님. Ctrl+Shift+V는 브라우저
+//   paste 이벤트가 발화되어 xterm 내부 paste 경로를 타므로 작동. Ctrl+V도 같은 경로로 라우팅한다.
 // Ctrl+A: 전체 선택 (readline의 \x01이 PTY로 가지 않게 차단).
 function attachKeyShortcuts(term: XTerminal) {
   term.attachCustomKeyEventHandler((e) => {
@@ -44,6 +52,14 @@ function attachKeyShortcuts(term: XTerminal) {
       }
       return true;
     }
+    if (e.key === "v") {
+      readText()
+        .then((text) => {
+          if (text) term.paste(text);
+        })
+        .catch(() => {});
+      return false;
+    }
     if (e.key === "a") {
       term.selectAll();
       return false;
@@ -52,7 +68,13 @@ function attachKeyShortcuts(term: XTerminal) {
   });
 }
 
-export function PtyTerminal({ spawn, onExit, onSessionChange, spawnDelayMs }: Props) {
+export function PtyTerminal({
+  spawn,
+  onExit,
+  onSessionChange,
+  spawnDelayMs,
+  scrollback,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -201,7 +223,7 @@ export function PtyTerminal({ spawn, onExit, onSessionChange, spawnDelayMs }: Pr
       cursorBlink: true,
       cursorStyle: "block",
       convertEol: false,
-      scrollback: 10000,
+      scrollback: scrollback ?? 10000,
       allowProposedApi: true,
     });
 

@@ -43,6 +43,13 @@ echo "--- free -m ---"
 free -m
 echo ""
 
+# swap 설정 — free/vmstat은 사용량/IO만, 영속 설정(fstab/swappiness)은 별도로 봐야 함.
+echo "--- swap 설정 ---"
+swapon --show 2>&1 || echo "(swap 활성 X)"
+(grep -iE "swap" /etc/fstab 2>/dev/null || echo "(fstab swap 항목 없음)")
+sysctl vm.swappiness vm.vfs_cache_pressure 2>&1
+echo ""
+
 echo "--- vmstat 1 3 ---"
 vmstat 1 3
 echo ""
@@ -67,6 +74,30 @@ echo "--- actuator/health ---"
 curl -sf --max-time 3 http://localhost:8080/actuator/health 2>&1 || echo "actuator unreachable"
 echo ""
 
+echo "--- actuator/metrics/hikaricp.connections.active ---"
+# DB 커넥션 풀 활성 연결 수. metrics endpoint이 expose 안 되어 있으면 404 또는 연결 실패.
+curl -sf --max-time 3 http://localhost:8080/actuator/metrics/hikaricp.connections.active 2>&1 \
+  || echo "actuator metrics endpoint disabled or unreachable"
+echo ""
+
+echo "--- journalctl 1h ERROR/Exception/Caused by ---"
+# 최근 1시간 ERROR 패턴 전수. 5분 tail은 위쪽 섹션이 담당, 이건 더 넓은 윈도우.
+journalctl -u "$SERVICE_NAME" --since "1 hour ago" --no-pager 2>&1 \
+  | grep -iE "ERROR|Exception|Caused by" \
+  | tail -50 \
+  || echo "(1시간 내 ERROR 없음)"
+echo ""
+
+# 24시간 누적 — 반복 패턴 식별 (count + 마지막 50줄).
+echo "--- journalctl 24h ERROR/Exception 누적 ---"
+journalctl -u "$SERVICE_NAME" --since "24 hours ago" --no-pager 2>/dev/null \
+  | grep -cE "ERROR|Exception" \
+  | xargs -I{} echo "24h ERROR/Exception 누적: {} 건"
+journalctl -u "$SERVICE_NAME" --since "24 hours ago" --no-pager 2>/dev/null \
+  | grep -E "ERROR|Exception" \
+  | tail -50
+echo ""
+
 if [ -n "$PID" ] && [ "$PID" != "0" ]; then
   # systemd PrivateTmp=true 환경에서 attach socket(/tmp/.java_pid$PID)에 접근하려면
   # java 프로세스의 mount namespace로 들어가야 함. 진단 사용자는 NOPASSWD 화이트리스트 sudo로 nsenter/jcmd만 허용.
@@ -81,6 +112,10 @@ if [ -n "$PID" ] && [ "$PID" != "0" ]; then
   echo ""
   echo "--- jstat -gc ---"
   sudo jstat -gc "$PID" 1000 3 2>&1
+  echo ""
+  echo "--- jstat -gcutil 1s × 5 (GC 추세) ---"
+  # -gc는 절대값 KB, -gcutil은 percent(%) 추세 — heap pressure 가시화에 유용.
+  sudo jstat -gcutil "$PID" 1000 5 2>&1
 else
   echo "[알림] MainPID 없음 — JVM 명령 생략"
 fi

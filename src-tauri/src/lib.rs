@@ -2,6 +2,8 @@ mod audit_log;
 mod build;
 mod claude_safety;
 mod config;
+mod diag_setup;
+mod diag_ssh_allow;
 mod hook_installer;
 mod hooks_bus;
 mod known_hosts;
@@ -66,6 +68,8 @@ pub fn run() {
             sftp::sftp_upload_kill,
             ssh_exec::ssh_exec,
             ssh_exec::ssh_exec_kill,
+            ssh_exec::ssh_collect_exec,
+            ssh_exec::ssh_collect_kill,
             build::build_start,
             build::build_kill,
             claude_safety::install_claude_safety_rules,
@@ -74,6 +78,11 @@ pub fn run() {
             hook_installer::claude_hooks_status,
             hooks_bus::hook_gate_respond,
             hooks_bus::hook_paths,
+            diag_ssh_allow::install_diag_ssh_allow,
+            diag_ssh_allow::remove_diag_ssh_allow,
+            diag_ssh_allow::diag_ssh_allow_status,
+            diag_setup::diag_setup_prepare,
+            diag_setup::diag_setup_cleanup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

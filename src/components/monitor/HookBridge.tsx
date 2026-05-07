@@ -38,7 +38,7 @@ async function sendDesktopToast(panel: string, payload: HookPayload) {
       : "";
   try {
     await sendNotification({
-      title: `또돌이 — ${panel}`,
+      title: `Sidabari — ${panel}`,
       body: `${subtype}${tail}`,
     });
   } catch (e) {

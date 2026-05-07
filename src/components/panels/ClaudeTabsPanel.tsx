@@ -77,6 +77,7 @@ function ClaudeTabButton({
 
 export function ClaudeTabsPanel() {
   const { isFocused, onMouseDown } = usePanelFocus("claude-tabs");
+  const claudeRestartKey = useAppStore((s) => s.claudeRestartKey);
   const [tabs, setTabs] = useState<Tab[]>([]);
   // Dashboard 탭이 항상 존재 → 초기 활성 탭은 Dashboard.
   const [activeId, setActiveId] = useState<string>(DASHBOARD_TAB_ID);
@@ -115,6 +116,16 @@ export function ClaudeTabsPanel() {
       cancelled = true;
     };
   }, []);
+
+  // 일괄 재시작 시 직렬화 재가동 — 모든 탭 unmount(key 변경) + 다음 frame에 첫 탭부터 다시 mount.
+  useEffect(() => {
+    if (claudeRestartKey === 0) return;
+    setMountedCount(0);
+    const t = window.setTimeout(() => {
+      setMountedCount(tabsRef.current.length > 0 ? 1 : 0);
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [claudeRestartKey]);
 
   // Phase 6b — SessionStart 진전 + 5초 timeout 폴백.
   useEffect(() => {
@@ -271,6 +282,8 @@ export function ClaudeTabsPanel() {
               >
                 {mounted ? (
                   <PtyTerminal
+                    // restartAllClaudes()로 카운터 증가 시 unmount/remount → 새 spawn.
+                    key={claudeRestartKey}
                     spawn={{
                       command: "claude",
                       args: ["-c"],

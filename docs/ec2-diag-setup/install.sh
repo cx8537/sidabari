@@ -67,7 +67,8 @@ cat > "$TMP_SUDOERS" <<'EOF'
 Cmnd_Alias SIDABARI_DIAG = \
   /usr/bin/nsenter -t [0-9]* -m -- /usr/bin/jstack [0-9]*, \
   /usr/bin/nsenter -t [0-9]* -m -- /usr/bin/jcmd [0-9]* *, \
-  /usr/bin/jstat -gc [0-9]* *
+  /usr/bin/jstat -gc [0-9]* *, \
+  /usr/bin/jstat -gcutil [0-9]* *
 
 %sidabari-diag-users ALL=(root) NOPASSWD: SIDABARI_DIAG
 EOF

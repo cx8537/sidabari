@@ -47,6 +47,13 @@ type AppState = {
   focusedPanelId: PanelId | null;
   panelActivity: Record<string, PanelActivity>;
   panelCurrentTool: Record<string, PanelCurrentTool>;
+  /// 모든 Claude PTY를 일괄 unmount/remount하기 위한 카운터.
+  /// MainClaudePanel/ClaudeTabsPanel의 PtyTerminal key prop에 결합되어, 값이 바뀌면
+  /// React가 컴포넌트를 새로 mount → 새 spawn → 새 settings.local.json 로드.
+  claudeRestartKey: number;
+  /// EC2 SSH 패널 출력에서 host(IP) 마스킹 활성 여부. SettingsModal save 시 갱신,
+  /// SshTerminal이 mount 시 loadConfig로 한 번 더 동기화. 토글 즉시 반영 (새 chunk부터).
+  maskEc2Ips: boolean;
   // 좌측 메인 Claude PTY의 현재 활성 sessionId (사양서 §3.6 — 분석 요청 텍스트 주입 대상).
   mainClaudeSessionId: string | null;
   // EC2 메인 SSH 활성 sessionId. 진단 패널이 mount되기 전 조건.
@@ -57,6 +64,9 @@ type AppState = {
   activeDeployExecId: string | null;
   // 현재 진행 중인 SFTP upload id — 강제 중단 시 sftp_upload_kill 대상.
   activeUploadId: string | null;
+  // Dashboard 헤드리스 새로고침 진행 중인 ssh_collect_exec id — 강제 중단 시 ssh_collect_kill 대상.
+  // 진단 패널 SSH 세션과는 별개 (헤드리스, 화면 X). 동시에 1개만 실행 (UI에서 가드).
+  activeDiagExecId: string | null;
   // EC2 진단 패널은 floating dialog로 표시 — 사용자가 [진단] 버튼으로 on-demand로 열고
   // 닫을 때 SSH 세션 자동 종료 (DialogContent unmount → SshTerminal cleanup).
   diagPanelOpen: boolean;
@@ -74,11 +84,15 @@ type AppState = {
   setMainEc2DiagSessionId: (id: string | null) => void;
   setActiveDeployExecId: (id: string | null) => void;
   setActiveUploadId: (id: string | null) => void;
+  setActiveDiagExecId: (id: string | null) => void;
   setDiagPanelOpen: (open: boolean) => void;
   setLatestDiagnostic: (m: DiagnosticMetrics | null) => void;
   setPanelActivity: (panelId: string, state: PanelActivityState) => void;
   setPanelCurrentTool: (panelId: string, tool: string, detail: string) => void;
   clearPanelCurrentTool: (panelId: string) => void;
+  /** 모든 Claude PTY 일괄 재시작 (settings.local.json 변경 즉시 반영). */
+  restartAllClaudes: () => void;
+  setMaskEc2Ips: (v: boolean) => void;
 };
 
 function newEvent(source: string, message: string): ConsoleEvent {
@@ -93,17 +107,20 @@ function newEvent(source: string, message: string): ConsoleEvent {
 export const useAppStore = create<AppState>((set) => ({
   attemptStatus: "idle",
   attemptId: null,
-  consoleEvents: [newEvent("SYSTEM", "또돌이 시작")],
+  consoleEvents: [newEvent("SYSTEM", "Sidabari 시작")],
   focusedPanelId: null,
   mainClaudeSessionId: null,
   mainEc2SessionId: null,
   mainEc2DiagSessionId: null,
   activeDeployExecId: null,
   activeUploadId: null,
+  activeDiagExecId: null,
   diagPanelOpen: false,
   latestDiagnostic: null,
   panelActivity: {},
   panelCurrentTool: {},
+  claudeRestartKey: 0,
+  maskEc2Ips: false,
 
   addEvent: (source, message) =>
     set((state) => ({
@@ -158,6 +175,8 @@ export const useAppStore = create<AppState>((set) => ({
 
   setActiveUploadId: (id) => set({ activeUploadId: id }),
 
+  setActiveDiagExecId: (id) => set({ activeDiagExecId: id }),
+
   setDiagPanelOpen: (open) => set({ diagPanelOpen: open }),
 
   setLatestDiagnostic: (latestDiagnostic) => set({ latestDiagnostic }),
@@ -190,4 +209,15 @@ export const useAppStore = create<AppState>((set) => ({
       delete next[panelId];
       return { panelCurrentTool: next };
     }),
+
+  restartAllClaudes: () =>
+    set((prev) => ({
+      claudeRestartKey: prev.claudeRestartKey + 1,
+      consoleEvents: [
+        ...prev.consoleEvents,
+        newEvent("USER", "Claude PTY 일괄 재시작 (설정 변경 반영)"),
+      ],
+    })),
+
+  setMaskEc2Ips: (v) => set({ maskEc2Ips: v }),
 }));

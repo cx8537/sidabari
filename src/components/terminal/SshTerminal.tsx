@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import "@xterm/xterm/css/xterm.css";
 import { TERMINAL_THEME } from "./Terminal";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,43 @@ import {
   sshWrite,
   type ConnectOptions,
 } from "@/lib/ssh";
+import { useAppStore } from "@/store/useAppStore";
+import { loadConfig } from "@/lib/config";
+
+// 옵션 A 마스킹 — config.ec2.host 정확 매칭만 치환. false positive 없음.
+// "***REDACTED-IP***" → "*.***.***.244" / "example.com" → "ex***om".
+function maskHost(host: string): string {
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) return `*.***.***.${ipv4[4]}`;
+  if (host.length <= 4) return "***";
+  return `${host.slice(0, 2)}***${host.slice(-2)}`;
+}
+
+/// stream chunk masker — chunk 경계에 host가 걸쳐도 처리.
+/// 끝부분이 host의 prefix일 가능성이 있으면 buffer로 보관해 다음 chunk와 합쳐 매칭.
+function makeStreamMasker(host: string) {
+  const masked = maskHost(host);
+  let buffer = "";
+  return (chunk: string): string => {
+    if (!host) return chunk;
+    const combined = buffer + chunk;
+    const replaced = combined.split(host).join(masked);
+    const maxOverlap = Math.min(host.length - 1, replaced.length);
+    let overlap = 0;
+    for (let len = maxOverlap; len > 0; len--) {
+      if (host.startsWith(replaced.slice(-len))) {
+        overlap = len;
+        break;
+      }
+    }
+    if (overlap > 0) {
+      buffer = replaced.slice(-overlap);
+      return replaced.slice(0, -overlap);
+    }
+    buffer = "";
+    return replaced;
+  };
+}
 
 // SSH 연결 정보 — session_id, rows, cols는 SshTerminal이 채움.
 export type SshConnect = Omit<ConnectOptions, "session_id" | "rows" | "cols">;
@@ -38,6 +75,8 @@ type Props = {
 
 type Status = "idle" | "connecting" | "running" | "closed" | "error";
 
+// Ctrl+V는 xterm 기본 처리가 raw \x16(SYN)을 SSH로 보냄 — paste가 아님.
+// 클립보드를 읽어 term.paste()로 라우팅해 Ctrl+Shift+V와 같은 paste 경로(브래킷 페이스트 모드 존중) 사용.
 function attachKeyShortcuts(term: XTerminal) {
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;
@@ -50,6 +89,14 @@ function attachKeyShortcuts(term: XTerminal) {
         return false;
       }
       return true;
+    }
+    if (e.key === "v") {
+      readText()
+        .then((text) => {
+          if (text) term.paste(text);
+        })
+        .catch(() => {});
+      return false;
     }
     if (e.key === "a") {
       term.selectAll();
@@ -75,6 +122,27 @@ export function SshTerminal({
   const onSessionChangeRef = useRef(onSessionChange);
   onSessionChangeRef.current = onSessionChange;
 
+  // 마스킹 토글 — store 구독 + ref로 콜백에서 최신값 참조 (deps 흔들지 않음).
+  const maskEc2Ips = useAppStore((s) => s.maskEc2Ips);
+  const setMaskEc2Ips = useAppStore((s) => s.setMaskEc2Ips);
+  const maskRef = useRef(maskEc2Ips);
+  maskRef.current = maskEc2Ips;
+
+  // mount 시 loadConfig로 store 동기화 (앱 시작 직후 첫 SshTerminal이 store 초기화 담당).
+  // 기존 store가 이미 SettingsModal save로 갱신되어 있으면 동일 값 재기록 — 무해.
+  useEffect(() => {
+    let cancelled = false;
+    loadConfig()
+      .then((c) => {
+        if (cancelled) return;
+        setMaskEc2Ips(c.ui.mask_ec2_ips ?? false);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [setMaskEc2Ips]);
+
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -94,15 +162,21 @@ export function SshTerminal({
     notifySession(null);
     setErrorMsg(null);
     setStatus("connecting");
+    // 마스킹 — 새 SSH 세션마다 새 stream masker. 토글 ON일 때만 실제 transform 적용 (maskRef).
+    const masker = makeStreamMasker(connect.host);
     if (!hideConnectingBanner) {
+      const hostBanner = maskRef.current
+        ? maskHost(connect.host)
+        : connect.host;
       term.writeln(
-        `\x1b[90m[연결 중: ${connect.user}@${connect.host}:${connect.port ?? 22}]\x1b[0m`,
+        `\x1b[90m[연결 중: ${connect.user}@${hostBanner}:${connect.port ?? 22}]\x1b[0m`,
       );
     }
 
     const preId = crypto.randomUUID();
     try {
-      unlistenDataRef.current = await listenSshData(preId, (chunk) => {
+      unlistenDataRef.current = await listenSshData(preId, (rawChunk) => {
+        const chunk = maskRef.current ? masker(rawChunk) : rawChunk;
         // alt-screen TUI(top, vim 등)와 충돌 방지를 위해 alt 활성/진입 시 보강 생략.
         const hasClear = chunk.indexOf("\x1b[2J") >= 0;
         const enteringAlt =

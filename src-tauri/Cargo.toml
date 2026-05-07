@@ -1,7 +1,7 @@
 [package]
 name = "sidabari"
 version = "0.1.0"
-description = "Sidabari (또돌이): 1인용 Claude Code 바이브 코딩 자동화 도구"
+description = "Sidabari: 1인용 Claude Code 바이브 코딩 자동화 도구"
 authors = []
 edition = "2021"
 
@@ -38,4 +38,7 @@ sha2 = "0.10"
 notify = "6"
 # Phase 5a — 훅 이벤트 영구 적재용 SQLite. bundled로 시스템 sqlite 의존성 회피.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# 원클릭 진단 셋업 — 진단 전용 ed25519 키페어 native 생성 (ssh-keygen 명령 의존 회피).
+ssh-key = { version = "0.6", features = ["ed25519"] }
+rand_core = { version = "0.6", features = ["std"] }
 
