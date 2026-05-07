@@ -9,7 +9,7 @@
 
 - **프로젝트명**: Sidabari
 - **표시명 (사용자 대면)**: Sidabari
-- **본질**: 본인용 개발 자동화 도구 (1인 사용)
+- **본질**: 1인 사용 가정으로 설계된 Claude Code 기반 개발 자동화 도구. MIT 라이선스로 공개 — 같은 워크플로우를 쓰는 사용자라면 그대로 쓰거나 포크해 손볼 수 있다.
 - **기술 스택**: Tauri 2.x + Vite + React + TypeScript + Rust
 - **상세 사양**: `SIDABARI_SPEC.md` 참조
 
