@@ -1046,7 +1046,7 @@ export function SettingsModal({ open, onOpenChange }: Props) {
             value={config.monitoring.service_name}
             onChange={(e) => updateMonitoring({ service_name: e.target.value })}
             disabled={!isReady}
-            placeholder="예: myapp, ***REDACTED-SERVICE***, api-server"
+            placeholder="예: myapp, my-service, api-server"
             autoComplete="off"
             spellCheck={false}
             className={INPUT_CLASS}

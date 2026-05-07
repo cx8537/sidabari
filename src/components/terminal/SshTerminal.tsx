@@ -19,7 +19,7 @@ import { useAppStore } from "@/store/useAppStore";
 import { loadConfig } from "@/lib/config";
 
 // 옵션 A 마스킹 — config.ec2.host 정확 매칭만 치환. false positive 없음.
-// "***REDACTED-IP***" → "*.***.***.244" / "example.com" → "ex***om".
+// IPv4 "1.2.3.4" → "*.***.***.4" / 도메인 "example.com" → "ex***om".
 function maskHost(host: string): string {
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (ipv4) return `*.***.***.${ipv4[4]}`;

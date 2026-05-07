@@ -313,7 +313,7 @@ export function EC2Panel({ role }: Props) {
               title={
                 !localSessionId
                   ? "SSH 세션 비활성"
-                  : "***REDACTED-SERVICE*** 진단 명령 일괄 실행 (uptime/df/top/journalctl/jstack 등). 완료 후 [분석 요청]으로 Claude에 전달."
+                  : "진단 대상 서비스의 진단 명령 일괄 실행 (uptime/df/top/journalctl/jstack 등). 완료 후 [분석 요청]으로 Claude에 전달."
               }
             >
               <ListChecks /> 자료 일괄 수집

@@ -18,7 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 사용자가 진단 대상 systemd 서비스 이름을 환경변수로 명시해야 함.
-# (이전에는 ***REDACTED-SERVICE*** 기본값이 있었으나 일반화 차원에서 제거 — 잘못된 서비스에 부착되는 사고 방지)
+# 기본값을 두지 않음 — 잘못된 서비스에 부착되는 사고 방지.
 if [ -z "${SIDABARI_SERVICE:-}" ]; then
   echo "[ERROR] SIDABARI_SERVICE 환경변수가 필요합니다. 사용법:" >&2
   echo "    SIDABARI_SERVICE=your-systemd-service-name ./install.sh" >&2
