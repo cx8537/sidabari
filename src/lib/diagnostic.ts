@@ -91,3 +91,38 @@ export function buildCollectCommand(
     `echo "${COLLECT_END_MARKER}"`,
   ].join("; ");
 }
+
+// 지난 24시간 ERROR/WARN/Exception 로그 전수. [자료 일괄 수집]보다 좁은 범위(시스템 메트릭/JVM 제외)로
+// 빠르게 호출 가능. 마커는 [자료 일괄 수집]과 의도적으로 다르게 — Dashboard 자동 갱신 트리거 방지.
+export const ERRORS_24H_END_MARKER = "===== 24시간 오류 수집 종료 =====";
+
+export function build24hErrorsCommand(
+  serviceName: string,
+  override?: string,
+): string {
+  const svc = serviceName.trim();
+  if (svc === "") {
+    throw new Error("service_name이 비어있습니다 (설정 → 시스템 진단 탭).");
+  }
+
+  if (override && override.trim() !== "") {
+    return override.replace(/\{service\}/g, svc);
+  }
+
+  return [
+    "clear",
+    `echo "===== 지난 24시간 오류 (${svc}) ====="`,
+    'echo "Host=$(hostname)"',
+    'echo "Date=$(date -Is)"',
+    'echo ""',
+    'echo "--- 24h WARN/ERROR/Exception 누적 카운트 ---"',
+    `sudo journalctl -u ${svc} --since "24 hours ago" --no-pager 2>/dev/null | grep -cE "WARN|ERROR|Exception" | xargs -I{} echo "총 24h WARN/ERROR/Exception: {} 건"`,
+    'echo ""',
+    'echo "--- 24h ERROR/Exception/Caused by 전수 (최근 300줄) ---"',
+    `sudo journalctl -u ${svc} --since "24 hours ago" --no-pager 2>/dev/null | grep -iE "ERROR|Exception|Caused by" | tail -300 || echo "(24시간 내 ERROR 없음)"`,
+    'echo ""',
+    'echo "--- 24h WARN (최근 200줄) ---"',
+    `sudo journalctl -u ${svc} --since "24 hours ago" --no-pager 2>/dev/null | grep -iE "WARN" | grep -ivE "ERROR|Exception" | tail -200 || echo "(24시간 내 WARN 없음)"`,
+    `echo "${ERRORS_24H_END_MARKER}"`,
+  ].join("; ");
+}

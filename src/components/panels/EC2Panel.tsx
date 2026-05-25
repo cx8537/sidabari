@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ListChecks, Send, Stethoscope } from "lucide-react";
+import { History, ListChecks, Send, Stethoscope } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/useAppStore";
@@ -13,7 +13,7 @@ import { ptyWrite } from "@/lib/pty";
 import { listenSshData, sshWrite } from "@/lib/ssh";
 import { loadConfig } from "@/lib/config";
 import { stripAnsi } from "@/lib/ansi";
-import { buildCollectCommand } from "@/lib/diagnostic";
+import { build24hErrorsCommand, buildCollectCommand } from "@/lib/diagnostic";
 import {
   END_MARKER,
   extractCompletedSegment,
@@ -204,6 +204,44 @@ export function EC2Panel({ role }: Props) {
     }
   }
 
+  async function handleCollect24hErrors() {
+    if (!localSessionId) {
+      addEvent("SYSTEM", `[${label}] 지난 24시간 오류 수집 실패 — SSH 세션 비활성`);
+      return;
+    }
+    let cmd: string;
+    let svc: string;
+    try {
+      const cfg = await loadConfig();
+      svc = cfg.monitoring.service_name.trim();
+      if (svc === "") {
+        addEvent(
+          "SYSTEM",
+          `[${label}] 지난 24시간 오류 수집 실패 — 진단 서비스 이름 미설정 (설정 → 시스템 진단 탭).`,
+        );
+        return;
+      }
+      cmd = build24hErrorsCommand(svc);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addEvent(
+        "SYSTEM",
+        `[${label}] 지난 24시간 오류 수집 실패 — 설정 로드 오류: ${msg}`,
+      );
+      return;
+    }
+    try {
+      await sshWrite(localSessionId, `${cmd}\n`);
+      addEvent(
+        "USER",
+        `[${label}] 지난 24시간 오류 수집 시작 (${svc}) — 완료 후 [분석 요청] 클릭`,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addEvent("SYSTEM", `[${label}] 지난 24시간 오류 수집 실패: ${msg}`);
+    }
+  }
+
   async function handleAnalyze() {
     if (!mainClaudeSessionId) {
       addEvent(
@@ -305,19 +343,34 @@ export function EC2Panel({ role }: Props) {
             </Button>
           )}
           {role === "diagnostic" && (
-            <Button
-              size="xs"
-              onClick={handleCollect}
-              disabled={!localSessionId}
-              className="[&_svg]:text-action-green"
-              title={
-                !localSessionId
-                  ? "SSH 세션 비활성"
-                  : "진단 대상 서비스의 진단 명령 일괄 실행 (uptime/df/top/journalctl/jstack 등). 완료 후 [분석 요청]으로 Claude에 전달."
-              }
-            >
-              <ListChecks /> 자료 일괄 수집
-            </Button>
+            <>
+              <Button
+                size="xs"
+                onClick={handleCollect24hErrors}
+                disabled={!localSessionId}
+                className="[&_svg]:text-action-green"
+                title={
+                  !localSessionId
+                    ? "SSH 세션 비활성"
+                    : "지난 24시간의 ERROR/WARN/Exception/Caused by 로그를 journalctl로 수집 (시스템 메트릭/JVM 제외). 완료 후 [분석 요청]으로 Claude에 전달."
+                }
+              >
+                <History /> 지난 24시간 오류
+              </Button>
+              <Button
+                size="xs"
+                onClick={handleCollect}
+                disabled={!localSessionId}
+                className="[&_svg]:text-action-green"
+                title={
+                  !localSessionId
+                    ? "SSH 세션 비활성"
+                    : "진단 대상 서비스의 진단 명령 일괄 실행 (uptime/df/top/journalctl/jstack 등). 완료 후 [분석 요청]으로 Claude에 전달."
+                }
+              >
+                <ListChecks /> 자료 일괄 수집
+              </Button>
+            </>
           )}
           <Button
             size="xs"

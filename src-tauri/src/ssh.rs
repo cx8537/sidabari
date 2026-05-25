@@ -227,7 +227,7 @@ pub async fn ssh_connect(
     let session_id = opts.session_id.clone();
     let state_arc = state.inner().clone();
 
-    let mut handle = establish_handle(
+    let handle = establish_handle(
         &app,
         &state_arc,
         &opts.host,
@@ -265,8 +265,11 @@ pub async fn ssh_connect(
     let mut chan = channel;
 
     tokio::spawn(async move {
-        let mut close_reason = "EOF".to_string();
-        loop {
+        // ExitStatus는 보통 Eof/Close보다 먼저 도착하고 break를 일으키지 않는다.
+        // exit code를 종료 reason에 보존하려면 별도 추적 후 break 시점에 합쳐야 한다.
+        let mut exit_status: Option<u32> = None;
+        // `loop` break-with-value로 close_reason을 받아 초기 더미값을 두지 않는다.
+        let close_reason: String = loop {
             tokio::select! {
                 msg = chan.wait() => {
                     match msg {
@@ -288,25 +291,31 @@ pub async fn ssh_connect(
                         }
                         Some(ChannelMsg::Eof) => {
                             eprintln!("[ssh {}] EOF", session_io);
-                            close_reason = "EOF".to_string();
-                            break;
+                            break match exit_status {
+                                Some(s) => format!("exit status {} (EOF)", s),
+                                None => "EOF".to_string(),
+                            };
                         }
                         Some(ChannelMsg::Close) => {
                             eprintln!("[ssh {}] Close", session_io);
-                            close_reason = "channel closed".to_string();
-                            break;
+                            break match exit_status {
+                                Some(s) => format!("exit status {} (channel closed)", s),
+                                None => "channel closed".to_string(),
+                            };
                         }
-                        Some(ChannelMsg::ExitStatus { exit_status }) => {
-                            eprintln!("[ssh {}] ExitStatus {}", session_io, exit_status);
-                            close_reason = format!("exit status {}", exit_status);
+                        Some(ChannelMsg::ExitStatus { exit_status: s }) => {
+                            eprintln!("[ssh {}] ExitStatus {}", session_io, s);
+                            exit_status = Some(s);
                         }
                         Some(other) => {
                             eprintln!("[ssh {}] other msg: {:?}", session_io, std::mem::discriminant(&other));
                         }
                         None => {
                             eprintln!("[ssh {}] stream None", session_io);
-                            close_reason = "stream ended".to_string();
-                            break;
+                            break match exit_status {
+                                Some(s) => format!("exit status {} (stream ended)", s),
+                                None => "stream ended".to_string(),
+                            };
                         }
                     }
                 }
@@ -321,13 +330,15 @@ pub async fn ssh_connect(
                         Outbound::Close => {
                             let _ = chan.eof().await;
                             let _ = chan.close().await;
-                            close_reason = "user disconnect".to_string();
-                            break;
+                            break match exit_status {
+                                Some(s) => format!("user disconnect (exit status {})", s),
+                                None => "user disconnect".to_string(),
+                            };
                         }
                     }
                 }
             }
-        }
+        };
         // 정리 + frontend 알림
         let _ = state_io.sessions.lock().await.remove(&session_io);
         let _ = handle
