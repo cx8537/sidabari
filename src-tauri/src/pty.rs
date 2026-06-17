@@ -76,6 +76,102 @@ fn default_shell() -> (String, Vec<String>) {
     }
 }
 
+// Windows에서 PATH + PATHEXT로 program을 해소.
+// 호출자가 "claude"처럼 확장자 없는 이름을 보내면 npm shim의 실체(claude.cmd)를 찾아
+// CreateProcessW가 spawn할 수 있는 형태로 래핑한다.
+//
+// 반환: (실제 spawn할 program, args 앞에 prepend할 항목들).
+// - `.exe` / 절대 경로의 PE → 그대로
+// - `.cmd` / `.bat`         → ("cmd.exe", ["/c", resolved])
+// - `.ps1`                  → ("powershell.exe", ["-File", resolved])
+// - PATH 해소 실패           → 원본 그대로 (기존 동작 유지)
+//
+// 보안 (CLAUDE.md §1.2.2): 사용자 입력을 셸 명령 문자열로 조합하지 않는다.
+// 여기서도 CommandBuilder가 args를 개별 인자로 받아 CreateProcessW에 직접 전달 — 셸 인터프리테이션 경로 없음.
+#[cfg(windows)]
+fn resolve_windows_program(program: &str) -> (String, Vec<String>) {
+    let lower = program.to_lowercase();
+    // 이미 PE 실행파일이면 PATH 해소 불필요.
+    if lower.ends_with(".exe") {
+        return (program.to_string(), Vec::new());
+    }
+
+    let resolved = match find_on_path(program) {
+        Some(p) => p,
+        None => return (program.to_string(), Vec::new()),
+    };
+    let rl = resolved.to_lowercase();
+    if rl.ends_with(".cmd") || rl.ends_with(".bat") {
+        ("cmd.exe".to_string(), vec!["/c".to_string(), resolved])
+    } else if rl.ends_with(".ps1") {
+        (
+            "powershell.exe".to_string(),
+            vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-File".to_string(),
+                resolved,
+            ],
+        )
+    } else {
+        // 확장자 없는 PE 또는 .com 등 — 그대로
+        (resolved, Vec::new())
+    }
+}
+
+#[cfg(not(windows))]
+fn resolve_windows_program(program: &str) -> (String, Vec<String>) {
+    (program.to_string(), Vec::new())
+}
+
+#[cfg(windows)]
+fn find_on_path(name: &str) -> Option<String> {
+    let has_sep = name.contains('\\') || name.contains('/');
+    let has_ext = std::path::Path::new(name).extension().is_some();
+    let pathext =
+        std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let exts: Vec<String> = pathext
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+
+    // 절대/상대 경로가 명시된 경우엔 PATH 탐색 없이 그 위치만 확장자 보강.
+    if has_sep {
+        let base = std::path::PathBuf::from(name);
+        if has_ext && base.is_file() {
+            return Some(base.to_string_lossy().into_owned());
+        }
+        if !has_ext {
+            for ext in &exts {
+                let candidate = std::path::PathBuf::from(format!("{}{}", name, ext));
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+        return None;
+    }
+
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        if has_ext {
+            let direct = dir.join(name);
+            if direct.is_file() {
+                return Some(direct.to_string_lossy().into_owned());
+            }
+        } else {
+            for ext in &exts {
+                let candidate = dir.join(format!("{}{}", name, ext));
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub fn pty_spawn(
     app: AppHandle,
@@ -92,13 +188,20 @@ pub fn pty_spawn(
         .map_err(|e| format!("openpty 실패: {}", e))?;
 
     // 빈 command는 "OS 기본 셸"로 해석.
-    let (program, default_args) = if opts.command.trim().is_empty() {
-        default_shell()
+    // Windows에서 "claude" 같은 npm shim은 PATH + PATHEXT로 실체(claude.cmd)를 찾아
+    // cmd.exe /c 로 래핑한다 — 그래야 CreateProcessW(error 193: 올바른 Win32 응용 프로그램이 아님)를 피한다.
+    let (program, prepend_args, default_args) = if opts.command.trim().is_empty() {
+        let (p, da) = default_shell();
+        (p, Vec::new(), da)
     } else {
-        (opts.command.clone(), Vec::new())
+        let (p, pre) = resolve_windows_program(opts.command.trim());
+        (p, pre, Vec::new())
     };
 
     let mut cmd = CommandBuilder::new(&program);
+    for a in &prepend_args {
+        cmd.arg(a);
+    }
     if opts.args.is_empty() {
         for a in default_args {
             cmd.arg(a);
@@ -124,10 +227,13 @@ pub fn pty_spawn(
         cmd.env(k, v);
     }
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("spawn 실패 ({}): {}", program, e))?;
+    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+        if program == opts.command || opts.command.trim().is_empty() {
+            format!("spawn 실패 ({}): {}", program, e)
+        } else {
+            format!("spawn 실패 ({} → {}): {}", opts.command, program, e)
+        }
+    })?;
     drop(pair.slave); // slave fd는 child가 갖는다; 마스터 측에서만 통신
 
     let writer = pair
